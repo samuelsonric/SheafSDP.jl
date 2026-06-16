@@ -8,13 +8,16 @@ using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, 
                                  DivisionWorkspace, FactorizationWorkspace, symbolic
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
-using BlockSparseArrays: BlockSparseMatrix, block, colrange, nvtxs, blocksparse
+using BlockSparseArrays: BlockSparseMatrix, block, colrange, nvtxs, vtxs, ncols, blocksparse
+using Base: oneto
 
 include("it.jl")
 include("sheaf.jl")
 include("kkt.jl")
+include("ipm.jl")
 
-export sheaf, solve_kkt!, solve_direct_sheaf
+export sheaf, solve_kkt!
 export RiWorkspace, IterationWorkspace
+export solve!, initialize!, SolverResult
 
 end # module SheafSDP

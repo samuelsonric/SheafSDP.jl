@@ -87,14 +87,6 @@ end
     A_sp = sparse(A)
     B_sp = sparse(B)
 
-    # Test Direct
-    println("\n--- solve_direct_sheaf ---")
-    @time x_d, y_d = solve_direct_sheaf(B, A, f, g)
-    println("  ||Ax + B'y - f|| = ", norm(A_sp * x_d + B_sp' * y_d - f))
-    println("  ||Bx - g||       = ", norm(B_sp * x_d - g))
-
-    @test norm(B_sp * x_d - g) < 1e-6
-
     # Pre-allocate workspaces
     facwrk = FactorizationWorkspace(F)
     divwrk = DivisionWorkspace(F, 1)
@@ -106,16 +98,16 @@ end
     r = zeros(m)
 
     # Test Richardson
-    println("\n--- solve_kkt! (γ=10.0) ---")
-    @time iters_r = solve_kkt!(facwrk, divwrk, riwork, x, y, r, F, L, B, A, f, g; γ=10.0)
+    println("\n--- solve_kkt! (α=10.0) ---")
+    @time iters_r = solve_kkt!(facwrk, divwrk, riwork, x, y, r, F, L, B, A, f, g; α=10.0)
     println("Iterations: $iters_r")
     println("  ||Ax + B'y - f|| = ", norm(A_sp * x + B_sp' * y - f))
     println("  ||Bx - g||       = ", norm(B_sp * x - g))
 
-    @test norm(B_sp * x - g) < 1e-6
+    @test norm(B_sp * x - g) < 1e-5
 
     # Test Schur CG (rebuild F since Richardson modified it)
-    println("\n--- solve_kkt! (γ=1.0) ---")
+    println("\n--- solve_kkt! (α=1.0) ---")
     P, Q, F, L, B = sheaf(src, dst, maps, nv, ne, edges)
     A = blocksparse(1:nv, 1:nv, A_V, nv, nv)
 
@@ -124,10 +116,10 @@ end
     divwrk = DivisionWorkspace(F, 1)
     itrwrk = CgWorkspace(m, m, Vector{Float64})
 
-    @time iters_cg = solve_kkt!(facwrk, divwrk, itrwrk, x, y, r, F, L, B, A, f, g; γ=1.0)
+    @time iters_cg = solve_kkt!(facwrk, divwrk, itrwrk, x, y, r, F, L, B, A, f, g; α=1.0)
     println("Iterations: $iters_cg")
     println("  ||Ax + B'y - f|| = ", norm(A_sp * x + B_sp' * y - f))
     println("  ||Bx - g||       = ", norm(B_sp * x - g))
 
-    @test norm(B_sp * x - g) < 1e-6
+    @test norm(B_sp * x - g) < 1e-5
 end

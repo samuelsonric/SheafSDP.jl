@@ -1,7 +1,8 @@
-# ============================================================================
-# Sheaf-aware solvers using pre-computed symbolic structure
-# ============================================================================
-
+#
+# copy a block diagonal matrix A into F:
+#
+#   F = A
+#
 function copydia!(F::ChordalCholesky, A::BlockSparseMatrix)
     copydia!(triangular(F), A)
     return F
@@ -37,106 +38,56 @@ function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
     return L
 end
 
-"""
-    solve_direct_sheaf(B, A, f, g)
-
-Solve the ECQP by direct factorization of the KKT system:
-
-    [A  Bᵀ] [x]   [f]
-    [B -εI] [y] = [g]
-
-Arguments:
-- B: coboundary as BlockSparseMatrix
-- A: block diagonal vertex weights as BlockSparseMatrix
-- f, g: RHS vectors
-
-Returns (x, y).
-"""
-function solve_direct_sheaf(B::BlockSparseMatrix, A::BlockSparseMatrix,
-                            f::Vector, g::Vector)
-    n = size(A, 1)
-    m = size(B, 1)
-
-    A_sp = sparse(A)
-    B_sp = sparse(B)
-
-    ε = 1e-10
-    K = [A_sp B_sp'; B_sp -ε*sparse(I, m, m)]
-    rhs = [f; g]
-
-    signs = [ones(Int, n); -ones(Int, m)]
-    F = ldlt!(ChordalLDLt(K); signs)
-    sol = F \ rhs
-
-    x = sol[1:n]
-    y = sol[n+1:end]
-
-    return x, y
-end
-
-"""
-    solve_kkt!(
-        facwrk, divwrk, itrwrk,
-        x, y, r,
-        F, L, B, A,
-        f, g;
-        γ=1.0, tol=1e-8, maxiter=1000
-    )
-
-Solve the ECQP using iterative method on the Schur complement.
-Dispatches to Richardson (RiWorkspace) or CG (CgWorkspace) based on itrwrk type.
-Zero-allocation version with pre-allocated workspaces.
-
-Arguments:
-- facwrk: FactorizationWorkspace(F)
-- divwrk: DivisionWorkspace(F, 1)
-- itrwrk: RiWorkspace or CgWorkspace
-- x: pre-allocated vector of length n (primal solution)
-- y: pre-allocated vector of length m (dual solution)
-- r: pre-allocated vector of length m (workspace)
-- F: ChordalCholesky working object from sheaf()
-- L: cached triangular (Laplacian values) from sheaf()
-- B: coboundary as BlockSparseMatrix
-- A: block diagonal vertex weights as BlockSparseMatrix
-- f, g: RHS vectors
-
-Returns iterations count. Solution is in x, y.
-"""
+#
+# solve the KKT system
+#
+#   [ A Bᵀ ] [ x ] = [ f ]
+#   [ B 0  ] [ y ]   [ g ]
+#
 function solve_kkt!(
-    facwrk::FactorizationWorkspace,
-    divwrk::DivisionWorkspace,
-    itrwrk::IterationWorkspace,
-    x::Vector,
-    y::Vector,
-    r::Vector,
-    F::ChordalCholesky,
-    L::ChordalTriangular,
-    B::BlockSparseMatrix,
-    A::BlockSparseMatrix,
-    f::Vector,
-    g::Vector;
-    γ::Float64=1.0,
-    tol::Float64=1e-8,
-    maxiter::Int=1000
-)
-    m = size(B, 1)
+    facwrk::FactorizationWorkspace{T, I},
+    divwrk::DivisionWorkspace{T, I},
+    itrwrk::IterationWorkspace{T},
+    x::AbstractVector{T},
+    y::AbstractVector{T},
+    r::AbstractVector{T},
+    F::ChordalCholesky{UPLO, T},
+    L::L_t,
+    B::BlockSparseMatrix{T},
+    A::BlockSparseMatrix{T},
+    f::AbstractVector{T},
+    g::AbstractVector{T};
+    α::Real=1.0,
+    atol::Real=√eps(T),
+    rtol::Real=√eps(T),
+    itmax::Integer=1000
+) where {UPLO, T, I, L_t <: ChordalTriangular}
+    m, n = size(B)
+
+    @assert length(x) == n
+    @assert length(y) == m
+    @assert length(r) == m
+    @assert length(f) == n
+    @assert length(g) == m
+    @assert size(F, 1) == n
+    @assert size(L, 1) == n
     #
     # initialize
     #
-    #   F = A + γ Bᵀ B
+    #   F = A + α Bᵀ B
     #
     # and factorize F.
     #
     copydia!(F.L, A)
-    axpby!(γ, L, 1, F.L)
+    axpby!(α, L, 1, F.L)
     cholesky!(facwrk, F)
     #
     # solve for x:
     #
-    #   F x = f + γ Bᵀ g
+    #   F x = f + α Bᵀ g
     #
     copyto!(x, f)
-    mul!(x, B', g, γ, 1)
+    mul!(x, B', g, α, 1)
     ldiv!(divwrk, F, x)
     #
     # compute the residual
@@ -161,25 +112,26 @@ function solve_kkt!(
         mul!(u, B, x)
     end
     #
-    # S is the augumented Schur complement:
+    # S is the augmented Schur complement:
     #
-    #   S = Bᵀ F⁻¹ B
+    #   S = B F⁻¹ Bᵀ
     #
-    S = LinearOperator(Float64, m, m, true, true, schur!)
+    S = LinearOperator(T, m, m, true, true, schur!)
     #
     # solve for y:
     #
     #   S y = r
     #
-    it!(itrwrk, S, r; α=γ, atol=tol, rtol=0.0, itmax=maxiter)
-    copyto!(y, itrwrk.x)
+    it!(itrwrk, S, r; α, atol, rtol, itmax)
+
+    copyto!(y, solution(itrwrk))
     #
     # compute the dual correction
     #
-    #   r = y - γ g
+    #   r = y - α g
     #
     copyto!(r, y)
-    axpy!(-γ, g, r)
+    axpy!(-α, g, r)
     #
     # solve for x:
     #
