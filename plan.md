@@ -93,7 +93,7 @@ operator either way — `B̃B̃ᵀ = B G² Bᵀ = B (W ⊗ₛ W) Bᵀ = B H⁻¹
 (`it!` on `S`) sees identical conditioning. Scaled does **not** give a better-conditioned `S`.
 
 **The one real difference** is in the matrix that gets the chordal Cholesky, the `(1,1)` block `F`:
-- Natural: `λ_min(H) = 1/λ_max(W)² → 0` near the boundary, so `F = H + τBᵀB` can go nearly
+- Natural: `λ_min(H) = 1/λ_max(W)² → 0` near the boundary, so `F = H + τ BᵀB` can go nearly
   singular from below in directions `BᵀB` doesn't cover; `κ(F) ~ κ(W)²`.
 - Scaled: `F = I + τB̃ᵀB̃ ⪰ I` is floored, `κ(F) ~ λ_max(W)²`.
 
@@ -153,7 +153,10 @@ W_v D_v W_v = L_P U S⁻¹Uᵀ (L_Pᵀ D_v L_P) U S⁻¹Uᵀ L_Pᵀ
 ```
 
 The singular values carry the geometry: `s_i = √λ_i(P_v^{1/2} D_v P_v^{1/2})` and
-`Σ s_i² = ⟨P_v, D_v⟩`. They also give the step-to-boundary bound cheaply (Phase 4).
+`Σ s_i² = ⟨P_v, D_v⟩`. They are also the **eigenvalues of the scaled point** `V_v`
+(`eig(V_v) = s`, verified numerically to machine precision), which the corrector's Lyapunov solve
+`L_V⁻¹` reuses (Phase 4). Note they do **not** substitute for the step-to-boundary bound — that is a
+*fresh* eigenproblem per direction; see §5.
 
 > This is **not** what the current `meanblock!` computes — it builds a non-symmetric
 > `S ≈ Q L⁻¹` and (separately) had the `n_v` vs `d_v` conflation. Replace the body with the
@@ -192,9 +195,11 @@ scaled space, where it's clean). With scaled directions
 `ΔP̃ = W^{-1/2} ΔP W^{-1/2}`, `ΔD̃ = W^{1/2} ΔD W^{1/2}`, the symmetrized complementarity is
 
 ```
-ΔP̃ + ΔD̃ = σμ V⁻¹ − V − (2nd-order term)         (scaled, symmetric)
+ΔP̃ + ΔD̃ = σμ V⁻¹ − V − L_V⁻¹(2nd-order term)      (scaled, symmetric)
 ```
 
+where `L_V(X) = ½(VX + XV)` is the Lyapunov operator (see §4 — for the centering/first-order part
+`L_V⁻¹` evaluates in closed form and disappears; for the 2nd-order term it does not).
 Unscaling (`apply W^{1/2}(·)W^{1/2}`, use `W D W = P`, `W^{-1}PW^{-1}=D`) turns the RHS into a
 matrix `R_c` and gives, in svec coordinates:
 
@@ -254,11 +259,12 @@ R_c,v = −P_v      ⟹   r_c = −p      ⟹   f = H(−p) − r_d = −d − r
 
 **Centering RHS — derivation (not just assertion).** The NT-symmetrized linearized
 complementarity in scaled space is the clean `dp + dd = σμ V⁻¹ − V` (the NT direction's defining
-virtue — no Sylvester operator on the left). Unscale via `W^{1/2}(·)W^{1/2}`, using
-`W^{1/2}VW^{1/2}=P` and `W^{1/2}V⁻¹W^{1/2}=WP⁻¹W=D⁻¹`:
+virtue — no Sylvester operator left over *for the first-order part*). Unscale via `W^{1/2}(·)W^{1/2}`,
+using `W^{1/2}VW^{1/2}=P` and `W^{1/2}V⁻¹W^{1/2}=WP⁻¹W=D⁻¹`:
 ```
 ΔP + W ΔD W = W^{1/2}(σμV⁻¹ − V)W^{1/2}  ⟹  R_c = σμ D⁻¹ − P   (centering part)
 ```
+(For the second-order term, below, this clean cancellation **fails** and `L_V⁻¹` survives.)
 
 **Centering parameter (Mehrotra):**
 ```
@@ -267,29 +273,77 @@ virtue — no Sylvester operator on the left). Unscale via `W^{1/2}(·)W^{1/2}`,
 σ     = (μ_aff / μ)³                                  # clamp to [0,1]
 ```
 
-**Corrector (centered + 2nd order) — needs only `W`, no `W^{1/2}`.** The scaled cross-term
-`−W^{1/2} sym(dp^a dd^a) W^{1/2}` collapses when you push the half-scalings through
-(`dp^a = W^{-1/2}ΔP^a W^{-1/2}`, `dd^a = W^{1/2}ΔD^a W^{1/2}`):
+**Corrector (centered + 2nd order) — needs the `V`-eigendecomposition.** Earlier drafts of this
+plan claimed the cross-term "collapses" to `sym(ΔP^a ΔD^a W)` with no operator. **That is wrong** —
+it silently drops an inverse Lyapunov solve. The correct derivation:
+
+The Jordan-symmetrized complementarity `P̃ ∘ D̃ = σμ I` (`X ∘ Y = ½(XY+YX)`), linearized about the
+scaled point `P̃ = D̃ = V`, is
 ```
-W^{1/2} sym(dp^a dd^a) W^{1/2} = ½(ΔP^a ΔD^a W + W ΔD^a ΔP^a) = sym(ΔP^a ΔD^a W)
+V ∘ (dp + dd) + dp^a ∘ dd^a = σμ I − V²
 ```
-so the full corrector RHS, **per block**, is
+with `dp = W^{-1/2}ΔP W^{-1/2}`, `dd = W^{1/2}ΔD W^{1/2}`. Inverting the Lyapunov operator
+`L_V(X) = V ∘ X = ½(VX + XV)`:
 ```
-R_c = σμ D⁻¹ − P − sym(ΔP^a ΔD^a W),   sym(X) = (X + Xᵀ)/2
+dp + dd = σμ V⁻¹ − V − L_V⁻¹(dp^a ∘ dd^a)
 ```
-Everything here you already have: `ΔP^a = smat(Δp^a)`, `ΔD^a = smat(Δd^a)` from the predictor
-solve, and `W_v` from the scaling. No half-scaling, no SVD square root, no scaled-space round trip.
-Form `R_c` per block, `svec` it, then `f = H·r_c − r_d` with the already-assembled `H`. Solve a
-second time (same `H`, same `B`, same `F` factorization — only `f` changes).
+The two **first-order** terms are eigen-images of `L_V` (`L_V⁻¹(σμI) = σμV⁻¹`, `L_V⁻¹(V²) = V`), so
+they pass through cleanly and unscale to the centering RHS `σμ D⁻¹ − P`. The **second-order** term
+does **not**: `dp^a ∘ dd^a` is a generic symmetric matrix that does not commute with `V`, so `L_V⁻¹`
+stays. The full corrector RHS, **per block**, is therefore
+```
+R_c = σμ D⁻¹ − P − W^{1/2} · L_V⁻¹(dp^a ∘ dd^a) · W^{1/2},   sym(X) = (X + Xᵀ)/2
+```
+
+> **Why the bare `sym(ΔP^a ΔD^a W)` is wrong.** Pushing the half-scalings through gives the *identity*
+> `sym(ΔP^a ΔD^a W) = W^{1/2}(dp^a ∘ dd^a)W^{1/2}` — i.e. the Jordan product *without* `L_V⁻¹`.
+> The LP special case makes the omission unmistakable: there `L_V` is multiplication by the scalar
+> `V = √(xz)`, and the textbook corrector term is `dx^a dz^a / V` — the `1/V` is exactly `L_V⁻¹`.
+> Dropping it leaves a second-order complementarity residual of `(I − L_V)(dp^a ∘ dd^a)`, nonzero
+> away from `V ∝ I`. It still **converges** (the first-order part is exact) but the Mehrotra
+> acceleration is degraded — more iterations, more erratic steps. A bare-product corrector is a
+> defensible cheap *approximation*, but it is not the exact NT Mehrotra corrector; don't present it
+> as one.
+
+**Computing the corrector term — no new factorization.** The Lyapunov solve looks like it needs
+the eigendecomposition of `V` (`L_V⁻¹(M) = Q[(QᵀMQ)_{ij}/(½(s_i+s_j))]Qᵀ` for `V = Q diag(s) Qᵀ`),
+but **you never form `V`, `W^{1/2}`, or a fresh eig/SVD.** Two facts collapse it onto quantities
+`meanblock!` already produces:
+1. The eigenvalues `s_i` of `V` are exactly the SVD singular values from §2.3 (`eig(V) == s`,
+   verified to machine precision).
+2. The solve folds into a congruence by `R = L_P U S^{-1/2}` (already built — `W = R Rᵀ`) plus an
+   entrywise divide, because `R = W^{1/2} O` (polar) with `O` the eigenvectors of `V`, so the
+   eigenvector conjugations cancel.
+
+The full corrector cross-term `W^{1/2} L_V⁻¹(dp^a ∘ dd^a) W^{1/2}` therefore equals
+```
+C = R · [ (R⁻¹ K R⁻ᵀ)_{ij} / (½(s_i + s_j)) ] · Rᵀ ,      K = sym(ΔP^a ΔD^a W)
+```
+with `R⁻¹ = S^{1/2} Uᵀ L_P⁻¹` (Cholesky/SVD factors + one triangular solve) and `K` needing only `W`
+and the predictor directions. Verified to `2e-15` against an explicit `eig(V)` Lyapunov solve.
+
+Per block per iteration this adds only a couple of small dense matmuls, one triangular solve against
+`L_P`, and an entrywise divide — reusing `s_i`, `U`, `L_P`, `W` from the scaling. **No eigendecomposition,
+no SVD, no matrix square root, no `V` formed.** (Forming `V` and eig-ing it would be the *more*
+expensive route — it needs `W^{1/2}` plus an eig of `V`, i.e. two small eigs; avoid it.) The full
+corrector RHS is then `R_c = σμ D⁻¹ − P − C`; `svec` it and form `f = H·r_c − r_d` with the
+already-assembled `H`. Solve a second time (same `H`, same `B`, same `F` factorization — only `f`
+changes).
 
 > **Phasing tip.** Implement and verify a **centered-only** step first: drop the 2nd-order term
 > and use a fixed schedule `σ ∈ (0,1)` (e.g. `σ = 0.1`–`0.5`). This gives a working short/long-step
 > path-follower (Phase 6) you can validate before adding the fiddly Mehrotra correction (Phase 7),
-> which is the single most error-prone formula in the whole method.
+> which is the single most error-prone formula in the whole method — and the one whose missing
+> `L_V⁻¹` is easy to overlook because the solver still converges without it.
 
 > **Checkpoint 4.** With the centered-only RHS, one step from a feasible interior point should
 > *decrease* `μ` by roughly the factor `σ` and keep `r_p, r_d` near zero (they're already zero and
 > the step preserves feasibility to linear order). Confirm `μ⁺ ≈ σμ`.
+>
+> **Checkpoint 4b (corrector).** On random SPD blocks, assert the second-order complementarity
+> residual `‖V∘(dp+dd) + dp^a∘dd^a − (σμI − V²)‖` is at tolerance with the `L_V⁻¹` corrector, and
+> confirm it is **large** (≈ `‖(I − L_V)(dp^a∘dd^a)‖`) if you drop `L_V⁻¹`. This is the cheapest
+> guard against silently reintroducing the bug.
 
 ---
 
@@ -347,15 +401,18 @@ while not converged:
 
 ## 7. Mehrotra predictor–corrector — add once Phase 6 is solid
 
-Replace the fixed-`σ` step with: affine solve → `σ = (μ_aff/μ)³` → corrected solve (§4). Reuse the
-**same `A = H` and the same `F` factorization** for both solves; only `f` changes, so the
-expensive chordal factorization in `solve_kkt!` is done once per iteration and the corrector is a
-cheap re-solve. (This is the payoff of the structure — note it explicitly in the loop.)
+Replace the fixed-`σ` step with: affine solve → `σ = (μ_aff/μ)³` → corrected solve (§4, **with the
+`L_V⁻¹` Lyapunov term**). Reuse the **same `A = H` and the same `F` factorization** for both solves;
+only `f` changes, so the expensive chordal factorization in `solve_kkt!` is done once per iteration
+and the corrector is a cheap re-solve. The only extra work the corrector adds over the predictor is
+the per-block Lyapunov solve `L_V⁻¹` — and that is just a congruence by `R` plus an entrywise divide
+(no new eig/SVD; see §4). (This is the payoff of the structure — note it explicitly in the loop.)
 
 > **Checkpoint 7.** On the same problems as Checkpoint 6, the Mehrotra version should reach the
 > same optimum in **noticeably fewer iterations** (typically <½). Same answer, fewer steps — if it
-> diverges or stalls, the 2nd-order scaled term `sym(ΔP̃^aff ΔD̃^aff)` is the prime suspect;
-> temporarily zero it to fall back to centered-corrector and confirm the rest is intact.
+> diverges or stalls, the 2nd-order term `L_V⁻¹(dp^aff ∘ dd^aff)` is the prime suspect; temporarily
+> zero it to fall back to centered-corrector and confirm the rest is intact. If it converges but
+> *slowly* (no better than centered), suspect the `L_V⁻¹` was dropped — see Checkpoint 4b.
 
 ---
 
@@ -381,10 +438,10 @@ cheap re-solve. (This is the payoff of the structure — note it explicitly in t
 | 1 | `residuals!`, `mu` | feasible-point gives 0 residuals, `μ=1` |
 | 2 | NT scaling (Cholesky+SVD), `H_v`, assemble `A` | `WDW=P`, `H p = d`, (a)≡(b) |
 | 3 | reduced-system wiring to `solve_kkt!` | original KKT residuals `≲√eps` |
-| 4 | predictor/corrector RHS (centered first) | `μ⁺ ≈ σμ` |
+| 4 | predictor/corrector RHS (centered first) | `μ⁺ ≈ σμ`; 2nd-order residual at tol (4b) |
 | 5 | step-to-boundary | `chol(P+τΔP)` succeeds every block |
 | 6 | centered path-follower | matches reference SDP, gap closes |
-| 7 | Mehrotra | same answer, fewer iterations |
+| 7 | Mehrotra (with `L_V⁻¹` corrector) | same answer, fewer iterations |
 | 8 | init / termination / robustness | clean exit on tiny problems |
 
 ---
@@ -395,5 +452,9 @@ cheap re-solve. (This is the payoff of the structure — note it explicitly in t
   `triroot(n)`. Reshape workspaces to `d_v × d_v`, slice `p`/`d` over the `n_v`-length range.
 - `meanblock!` currently computes a non-symmetric `S ≈ Q L⁻¹`; the plan's §2.3 SPD construction is
   what the `H = W⁻¹ ⊗ₛ W⁻¹` interface needs. Reconcile or replace, then gate on Checkpoint 2.
+- **`corrector_rhs!`: the 2nd-order term needs the inverse Lyapunov solve `L_V⁻¹(dp^a ∘ dd^a)`, not
+  the bare `sym(ΔP^a ΔD^a W)`** — the latter is the Jordan product missing `L_V⁻¹` (see §4). Reuse
+  `s_i = eig(V)` from the scaling for the Lyapunov eigenvalues. Omitting `L_V⁻¹` still converges but
+  kills the Mehrotra speedup; guard it with Checkpoint 4b.
 - `solve_kkt!` comment `S = BᵀF⁻¹B` should read `B F⁻¹ Bᵀ` (code is correct).
 - Don't overload `α`: augmentation weight vs. line-search step are different quantities.

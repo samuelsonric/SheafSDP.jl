@@ -89,29 +89,30 @@ function symmetrize!(M::AbstractMatrix, uplo::Val{UPLO}) where {UPLO}
 end
 
 #
-# compute NT scaling point W for a single block via Cholesky + SVD
+# compute NT scaling factors for a single block via Cholesky + SVD
 #
 # L_P = chol(P),  L_D = chol(D)
 # G = L_Pᵀ L_D
 # SVD: G = U Σ Vᵀ
-# W = L_P U Σ⁻¹ Uᵀ L_Pᵀ
 #
-# satisfies W D W = P
+# Stores L_P, U, and Σ (singular values). These define:
+#   R = L_P U Σ^{-1/2}
+#   W = R Rᵀ  (NT scaling, satisfies W D W = P)
+#   W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
 #
-# Returns W in matrix form (stored in WP workspace)
+# The singular values are also the eigenvalues of V = W^{1/2} D W^{1/2}
 #
-function meanblock!(WP::AbstractMatrix{T}, WD::AbstractMatrix{T}, P::AbstractMatrix{T}, D::AbstractMatrix{T}) where {T}
-    n = size(P, 1)
-
+function meanblock!(LP_out::AbstractMatrix{T}, U_out::AbstractMatrix{T}, s_out::AbstractVector{T},
+                    work::AbstractMatrix{T}, P::AbstractMatrix{T}, D::AbstractMatrix{T}) where {T}
     # L_P = chol(P)
-    copyto!(WP, P)
-    cholesky!(Symmetric(WP, :L))
-    L_P = LowerTriangular(WP)
+    copyto!(LP_out, P)
+    cholesky!(Symmetric(LP_out, :L))
+    L_P = LowerTriangular(LP_out)
 
     # L_D = chol(D)
-    copyto!(WD, D)
-    cholesky!(Symmetric(WD, :L))
-    L_D = LowerTriangular(WD)
+    copyto!(work, D)
+    cholesky!(Symmetric(work, :L))
+    L_D = LowerTriangular(work)
 
     # G = L_Pᵀ L_D
     G = L_P' * L_D
@@ -119,12 +120,11 @@ function meanblock!(WP::AbstractMatrix{T}, WD::AbstractMatrix{T}, P::AbstractMat
     # SVD: G = U Σ Vᵀ
     F = svd(G)
 
-    # W = L_P U Σ⁻¹ Uᵀ L_Pᵀ
-    # Compute R = L_P U Σ^{-1/2}, then W = R Rᵀ
-    R = L_P * F.U * Diagonal(1 ./ sqrt.(F.S))
-    mul!(WP, R, R')
+    # Store U and singular values
+    copyto!(U_out, F.U)
+    copyto!(s_out, F.S)
 
-    return WP
+    return
 end
 
 #
@@ -220,10 +220,17 @@ end
 #
 # compute H_v = W⁻¹ ⊗ₛ W⁻¹
 #
-function hessblock!(H::AbstractMatrix{T}, W::AbstractMatrix{T}, work::AbstractMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
-    copyto!(work, W)
-    C = cholesky!(Symmetric(work, :L))
-    Winv = inv(C)
+# W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹ where W = R R' with R = L_P U Σ^{-1/2}
+#
+function hessblock!(H::AbstractMatrix{T}, LP::AbstractMatrix{T}, U::AbstractMatrix{T},
+                    s::AbstractVector{T}, work::AbstractMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+    L_P = LowerTriangular(LP)
+
+    # W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
+    # Compute step by step: Y = U Σ U', then W⁻¹ = L_P⁻ᵀ Y L_P⁻¹
+    mul!(work, U * Diagonal(s), U')      # work = U Σ U'
+    Winv = L_P' \ work / L_P             # W⁻¹ = L_P⁻ᵀ work L_P⁻¹
+
     return skron!(H, Winv, uplo)
 end
 
@@ -284,42 +291,62 @@ function smat!(M::AbstractMatrix{T}, v::AbstractVector{T}, uplo::Val{UPLO}) wher
 end
 
 #
-# allocate block-diagonal matrices H and S with structure matching B
+# allocate block-diagonal matrices H, LP, U and singular values sv
 #
-# H has blocks of size trinum(d_v) × trinum(d_v)
-# S has blocks of size d_v × d_v
+# H has blocks of size trinum(d_v) × trinum(d_v) (Hessian)
+# LP has blocks of size d_v × d_v (lower triangular Cholesky factor of P)
+# U has blocks of size d_v × d_v (orthogonal matrix from SVD)
+# sv is a vector of length ν storing stacked singular values
+#
+# These factors satisfy: W = R R' where R = LP U Σ^{-1/2}
+# and allow efficient computation of W⁻¹ and the Lyapunov solve
 #
 function allocate_hess(::Type{T}, B::BlockSparseMatrix) where {T}
     nv = nvtxs(B)
     H_blocks = Matrix{T}[]
-    S_blocks = Matrix{T}[]
+    LP_blocks = Matrix{T}[]
+    U_blocks = Matrix{T}[]
+    total_d = 0
 
     for v in vtxs(B)
         n_v = ncols(B, v)
         d_v = triroot(n_v)
         push!(H_blocks, zeros(T, n_v, n_v))
-        push!(S_blocks, zeros(T, d_v, d_v))
+        push!(LP_blocks, zeros(T, d_v, d_v))
+        push!(U_blocks, zeros(T, d_v, d_v))
+        total_d += d_v
     end
 
     H = blocksparse(1:nv, 1:nv, H_blocks, nv, nv)
-    S = blocksparse(1:nv, 1:nv, S_blocks, nv, nv)
-    return H, S
+    LP = blocksparse(1:nv, 1:nv, LP_blocks, nv, nv)
+    U = blocksparse(1:nv, 1:nv, U_blocks, nv, nv)
+    sv = zeros(T, total_d)
+    return H, LP, U, sv
 end
 
 #
-# assemble block-diagonal Hessian H and scaling S from primal/dual iterates
+# assemble block-diagonal Hessian H and scaling factors LP, U, sv
 #
 # H_v = W_v⁻¹ ⊗ₛ W_v⁻¹ where W_v is NT scaling point for (P_v, D_v)
-# S_v = W_v (the NT scaling matrix)
+# LP_v = Cholesky factor of P_v
+# U_v = orthogonal matrix from SVD
+# sv contains stacked singular values (eigenvalues of V_v)
 #
-function hess!(H::BlockSparseMatrix{T}, S::BlockSparseMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+function hess!(H::BlockSparseMatrix{T}, LP::BlockSparseMatrix{T},
+               U::BlockSparseMatrix{T}, sv::AbstractVector{T},
+               p::AbstractVector{T}, d::AbstractVector{T},
+               B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+    sv_offset = 0
+
     for v in vtxs(B)
         r = colrange(B, v)
         n_v = ncols(B, v)
         d_v = triroot(n_v)
 
         H_v = block(H, v, v, v)
-        S_v = block(S, v, v, v)
+        LP_v = block(LP, v, v, v)
+        U_v = block(U, v, v, v)
+        sv_v = view(sv, sv_offset+1:sv_offset+d_v)
 
         # Build P_v and D_v from svec
         P_v = zeros(T, d_v, d_v)
@@ -329,13 +356,14 @@ function hess!(H::BlockSparseMatrix{T}, S::BlockSparseMatrix{T}, p::AbstractVect
         smat!(D_v, view(d, r), uplo)
         symmetrize!(D_v, uplo)
 
-        # Compute S_v via meanblock!
-        WD = zeros(T, d_v, d_v)  # workspace
-        meanblock!(S_v, WD, P_v, D_v)
+        # Compute LP_v, U_v, sv_v via meanblock!
+        work = zeros(T, d_v, d_v)
+        meanblock!(LP_v, U_v, sv_v, work, P_v, D_v)
 
         # Compute H_v via hessblock!
-        work = zeros(T, d_v, d_v)
-        hessblock!(H_v, S_v, work, uplo)
+        hessblock!(H_v, LP_v, U_v, sv_v, work, uplo)
+
+        sv_offset += d_v
     end
 end
 
@@ -403,14 +431,20 @@ function affine_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}) where {T}
 end
 
 #
-# corrector RHS: r_c = svec(σμ D⁻¹ - P - sym(ΔP^a ΔD^a W)) per block
+# corrector RHS with proper inverse Lyapunov solve
 #
 # Full Mehrotra corrector with 2nd-order term:
-#   R_c,v = σμ D_v⁻¹ - P_v - sym(ΔP_v^a ΔD_v^a W_v)
+#   R_c,v = σμ D_v⁻¹ - P_v - W^{1/2} L_V⁻¹(dp^a ∘ dd^a) W^{1/2}
 #
-# where sym(X) = (X + Xᵀ)/2
+# Uses LP (triangular), U (orthogonal), s (singular values) for efficient computation:
+#   R = LP U Σ^{-1/2}, so R⁻¹ = Σ^{1/2} U' LP⁻¹
 #
-function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::AbstractVector{T}, Δp::AbstractVector{T}, Δd::AbstractVector{T}, S::BlockSparseMatrix{T}, σμ::Real, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::AbstractVector{T},
+                        Δp::AbstractVector{T}, Δd::AbstractVector{T},
+                        LP::BlockSparseMatrix{T}, U::BlockSparseMatrix{T}, sv::AbstractVector{T},
+                        σμ::Real, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+    sv_offset = 0
+
     for v in vtxs(B)
         r = colrange(B, v)
         n_v = ncols(B, v)
@@ -431,20 +465,32 @@ function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::Abstrac
         smat!(ΔD_v, view(Δd, r), uplo)
         symmetrize!(ΔD_v, uplo)
 
-        S_v = block(S, v, v, v)
+        LP_v = block(LP, v, v, v)
+        U_v = block(U, v, v, v)
+        s_v = view(sv, sv_offset+1:sv_offset+d_v)
+        L_P = LowerTriangular(LP_v)
 
         # Compute D_v⁻¹ via Cholesky
         D_inv = inv(cholesky(Symmetric(D_v)))
 
-        # 2nd-order term: sym(ΔP_v ΔD_v S_v)
-        cross = ΔP_v * ΔD_v * S_v
-        cross_sym = (cross + cross') / 2
+        # Inverse Lyapunov solve using structured factors:
+        # R = L_P U Σ^{-1/2}, R⁻¹ = Σ^{1/2} U' L_P⁻¹
+        # A = R⁻¹ (ΔP ΔD R) = Σ^{1/2} U' (L_P⁻¹ ΔP ΔD L_P) U Σ^{-1/2}
+        X = L_P \ (ΔP_v * ΔD_v * L_P)   # triangular solve
+        Y = U_v' * X * U_v                       # orthogonal conjugation
+        # Combined scaling, symmetrization, Lyapunov divide, and unscaling:
+        # B_ij = (Y_ij/s_j + Y_ji/s_i) / (s_i + s_j)
+        B_mat = (Y ./ s_v' + Y' ./ s_v) ./ (s_v .+ s_v')
+        C = U_v * B_mat * U_v'
+        cross_sym = L_P * C * L_P'
 
         # R_c,v = σμ D_v⁻¹ - P_v - cross_sym
         R_c_v = σμ * D_inv - P_v - cross_sym
 
         # svec into r_c
         svec!(view(r_c, r), R_c_v, uplo)
+
+        sv_offset += d_v
     end
 
     return r_c
@@ -683,7 +729,7 @@ function solve!(
     Δy = zeros(T, m)
     Δd = zeros(T, n)
 
-    H, S = allocate_hess(T, B)
+    H, LP, U, sv = allocate_hess(T, B)
 
     # History tracking
     μ_history = T[]
@@ -730,8 +776,8 @@ function solve!(
             end
         end
 
-        # Assemble H (NT scaling + Hessian)
-        hess!(H, S, p, d, B, uplo)
+        # Assemble H (NT scaling + Hessian), LP, U, sv for Lyapunov solve
+        hess!(H, LP, U, sv, p, d, B, uplo)
 
         # Scale α so that τ_aug=1 is a reasonable default
         α = τ_aug * norm(Symmetric(H, UPLO)) / norm_B_sq
@@ -756,7 +802,7 @@ function solve!(
         σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
 
         # ===== Corrector step (reuses same factorization) =====
-        corrector_rhs!(r_c, p, d, Δp_aff, Δd_aff, S, σ * μ_curr, B, uplo)
+        corrector_rhs!(r_c, p, d, Δp_aff, Δd_aff, LP, U, sv, σ * μ_curr, B, uplo)
         newton_step!(Δp, Δy, Δd, divwrk, itrwrk, r, F, B, H,
                      r_c, r_p, r_d; α, atol, rtol, itmax)
 
