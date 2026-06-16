@@ -4,6 +4,7 @@ using LinearAlgebra
 using Random
 using JuMP
 using MosekTools
+using AppleAccelerate
 using SheafSDP: trinum, triroot, svec!, smat!, symmetrize!
 using BlockSparseArrays: vtxs, colrange, ncols
 
@@ -57,13 +58,13 @@ println()
 
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, B_sp, F, L; ε_feas=1e-8, ε_μ=1e-8, max_iter=100, τ_aug=10.0)
+solve!(p, d, y, c, g, B, F, L; ε_feas=1e-8, ε_μ=1e-8, max_iter=100, τ_aug=32000.0)
 
 # Solve with our solver (timed after warmup)
 println("Solving with SheafSDP...")
 p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B, B_sp, F, L;
-                               ε_feas=1e-8, ε_μ=1e-8, max_iter=100, τ_aug=10.0)
+t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
+                               ε_feas=1e-8, ε_μ=1e-8, max_iter=100, τ_aug=32000.0)
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  objective: $obj_sheaf")

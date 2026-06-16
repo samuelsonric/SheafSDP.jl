@@ -16,7 +16,7 @@ include("sheaf.jl")
 include("kkt.jl")
 include("ipm.jl")
 
-export sheaf, solve_kkt!
+export sheaf, solve_kkt!, factor_kkt!, solve_kkt_factored!
 export RiWorkspace, IterationWorkspace
 export solve!, initialize!, SolverResult
 

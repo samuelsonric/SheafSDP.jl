@@ -284,35 +284,42 @@ function smat!(M::AbstractMatrix{T}, v::AbstractVector{T}, uplo::Val{UPLO}) wher
 end
 
 #
-# assemble block-diagonal Hessian H from primal/dual iterates
+# allocate block-diagonal matrices H and S with structure matching B
+#
+# H has blocks of size trinum(d_v) × trinum(d_v)
+# S has blocks of size d_v × d_v
+#
+function allocate_hess(::Type{T}, B::BlockSparseMatrix) where {T}
+    nv = nvtxs(B)
+    H_blocks = Matrix{T}[]
+    S_blocks = Matrix{T}[]
+
+    for v in vtxs(B)
+        n_v = ncols(B, v)
+        d_v = triroot(n_v)
+        push!(H_blocks, zeros(T, n_v, n_v))
+        push!(S_blocks, zeros(T, d_v, d_v))
+    end
+
+    H = blocksparse(1:nv, 1:nv, H_blocks, nv, nv)
+    S = blocksparse(1:nv, 1:nv, S_blocks, nv, nv)
+    return H, S
+end
+
+#
+# assemble block-diagonal Hessian H and scaling S from primal/dual iterates
 #
 # H_v = W_v⁻¹ ⊗ₛ W_v⁻¹ where W_v is NT scaling point for (P_v, D_v)
+# S_v = W_v (the NT scaling matrix)
 #
-# Returns a BlockSparseMatrix with diagonal blocks H_v
-#
-function hess!(H_blocks::Vector{Matrix{T}}, W_blocks::Vector{Matrix{T}}, p::AbstractVector{T}, d::AbstractVector{T}, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
-    nv = nvtxs(B)
-
+function hess!(H::BlockSparseMatrix{T}, S::BlockSparseMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
     for v in vtxs(B)
         r = colrange(B, v)
         n_v = ncols(B, v)
         d_v = triroot(n_v)
 
-        # Get or resize workspace matrices
-        if length(H_blocks) < v
-            push!(H_blocks, zeros(T, n_v, n_v))
-        elseif size(H_blocks[v]) != (n_v, n_v)
-            H_blocks[v] = zeros(T, n_v, n_v)
-        end
-
-        if length(W_blocks) < v
-            push!(W_blocks, zeros(T, d_v, d_v))
-        elseif size(W_blocks[v]) != (d_v, d_v)
-            W_blocks[v] = zeros(T, d_v, d_v)
-        end
-
-        H_v = H_blocks[v]
-        W_v = W_blocks[v]
+        H_v = block(H, v, v, v)
+        S_v = block(S, v, v, v)
 
         # Build P_v and D_v from svec
         P_v = zeros(T, d_v, d_v)
@@ -322,17 +329,14 @@ function hess!(H_blocks::Vector{Matrix{T}}, W_blocks::Vector{Matrix{T}}, p::Abst
         smat!(D_v, view(d, r), uplo)
         symmetrize!(D_v, uplo)
 
-        # Compute W_v via meanblock!
+        # Compute S_v via meanblock!
         WD = zeros(T, d_v, d_v)  # workspace
-        meanblock!(W_v, WD, P_v, D_v)
+        meanblock!(S_v, WD, P_v, D_v)
 
         # Compute H_v via hessblock!
         work = zeros(T, d_v, d_v)
-        hessblock!(H_v, W_v, work, uplo)
+        hessblock!(H_v, S_v, work, uplo)
     end
-
-    # Build BlockSparseMatrix from diagonal blocks
-    return blocksparse(1:nv, 1:nv, H_blocks, nv, nv)
 end
 
 #
@@ -351,41 +355,38 @@ function newton_step!(
     Δp::AbstractVector{T},
     Δy::AbstractVector{T},
     Δd::AbstractVector{T},
-    facwrk::FactorizationWorkspace{T, I},
-    divwrk::DivisionWorkspace{T, I},
+    divwrk::DivisionWorkspace{T},
     itrwrk::IterationWorkspace{T},
     r::AbstractVector{T},
     F::ChordalCholesky{UPLO, T},
-    L::L_t,
     B::BlockSparseMatrix{T},
-    B_sp,  # sparse(B) for matvec
     H::BlockSparseMatrix{T},
-    H_sp,  # sparse(H) for matvec
     r_c::AbstractVector{T},
     r_p::AbstractVector{T},
     r_d::AbstractVector{T};
-    τ::Real=1.0,
+    α::Real=1.0,
     atol::Real=√eps(T),
     rtol::Real=√eps(T),
     itmax::Integer=1000
-) where {UPLO, T, I, L_t <: ChordalTriangular}
+) where {UPLO, T}
     n = length(Δp)
     m = length(Δy)
 
     # f = H r_c - r_d
-    f = H_sp * r_c - r_d
+    f = H * r_c - r_d
 
     # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
-    solve_kkt!(facwrk, divwrk, itrwrk, Δp, Δy, r, F, L, B, H, f, r_p; α=τ, atol, rtol, itmax)
+    # assumes F is already factored
+    solve_kkt_factored!(divwrk, itrwrk, Δp, Δy, r, F, B, f, r_p; α, atol, rtol, itmax)
 
     # recover Δy = -w (solve_kkt! returns w in Δy)
     lmul!(-1, Δy)
 
     # recover Δd = r_d - Bᵀ Δy
     copyto!(Δd, r_d)
-    mul!(Δd, B_sp', Δy, -1, 1)
+    mul!(Δd, B', Δy, -1, 1)
 
-    return nothing
+    return
 end
 
 #
@@ -409,7 +410,7 @@ end
 #
 # where sym(X) = (X + Xᵀ)/2
 #
-function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::AbstractVector{T}, Δp::AbstractVector{T}, Δd::AbstractVector{T}, W_blocks::Vector{Matrix{T}}, σμ::Real, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::AbstractVector{T}, Δp::AbstractVector{T}, Δd::AbstractVector{T}, S::BlockSparseMatrix{T}, σμ::Real, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
     for v in vtxs(B)
         r = colrange(B, v)
         n_v = ncols(B, v)
@@ -430,13 +431,13 @@ function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::Abstrac
         smat!(ΔD_v, view(Δd, r), uplo)
         symmetrize!(ΔD_v, uplo)
 
-        W_v = W_blocks[v]
+        S_v = block(S, v, v, v)
 
         # Compute D_v⁻¹ via Cholesky
         D_inv = inv(cholesky(Symmetric(D_v)))
 
-        # 2nd-order term: sym(ΔP_v ΔD_v W_v)
-        cross = ΔP_v * ΔD_v * W_v
+        # 2nd-order term: sym(ΔP_v ΔD_v S_v)
+        cross = ΔP_v * ΔD_v * S_v
         cross_sym = (cross + cross') / 2
 
         # R_c,v = σμ D_v⁻¹ - P_v - cross_sym
@@ -644,9 +645,8 @@ function solve!(
     c::AbstractVector{T},
     g::AbstractVector{T},
     B::BlockSparseMatrix{T},
-    B_sp,
     F::ChordalCholesky{UPLO, T},
-    L::L_t;
+    L::ChordalTriangular{:N, UPLO, T};
     γ::Real=0.99,
     ε_feas::Real=1e-8,
     ε_μ::Real=1e-8,
@@ -659,7 +659,7 @@ function solve!(
     stall_window::Int=5,
     stall_threshold::Real=0.99,
     τ_collapse_threshold::Real=1e-6
-) where {UPLO, T, I, L_t <: ChordalTriangular}
+) where {UPLO, T}
 
     n = length(p)
     m = length(y)
@@ -683,8 +683,7 @@ function solve!(
     Δy = zeros(T, m)
     Δd = zeros(T, n)
 
-    H_blocks = Matrix{T}[]
-    W_blocks = Matrix{T}[]
+    H, S = allocate_hess(T, B)
 
     # History tracking
     μ_history = T[]
@@ -695,10 +694,11 @@ function solve!(
 
     uplo = Val(UPLO)
     status = :max_iter
+    norm_B_sq = norm(B)^2
 
     for iter in 1:max_iter
         # Compute residuals and μ
-        residuals!(r_p, r_d, B_sp, p, d, y, c, g)
+        residuals!(r_p, r_d, B, p, d, y, c, g)
         μ_curr = mu(p, d, ν)
         push!(μ_history, μ_curr)
 
@@ -731,13 +731,18 @@ function solve!(
         end
 
         # Assemble H (NT scaling + Hessian)
-        H = hess!(H_blocks, W_blocks, p, d, B, uplo)
-        H_sp = sparse(H)
+        hess!(H, S, p, d, B, uplo)
+
+        # Scale α so that τ_aug=1 is a reasonable default
+        α = τ_aug * norm(Symmetric(H, UPLO)) / norm_B_sq
+
+        # Factor F = H + α B'B once per iteration
+        factor_kkt!(facwrk, F, L, H; α)
 
         # ===== Predictor (affine) step =====
         affine_rhs!(r_c, p)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, facwrk, divwrk, itrwrk, r, F, L, B, B_sp, H, H_sp,
-                     r_c, r_p, r_d; τ=τ_aug, atol, rtol, itmax)
+        newton_step!(Δp_aff, Δy_aff, Δd_aff, divwrk, itrwrk, r, F, B, H,
+                     r_c, r_p, r_d; α, atol, rtol, itmax)
 
         # Step to boundary for affine direction
         τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, B, uplo; γ=one(T))
@@ -750,10 +755,10 @@ function solve!(
         # Adaptive centering parameter
         σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
 
-        # ===== Corrector step =====
-        corrector_rhs!(r_c, p, d, Δp_aff, Δd_aff, W_blocks, σ * μ_curr, B, uplo)
-        newton_step!(Δp, Δy, Δd, facwrk, divwrk, itrwrk, r, F, L, B, B_sp, H, H_sp,
-                     r_c, r_p, r_d; τ=τ_aug, atol, rtol, itmax)
+        # ===== Corrector step (reuses same factorization) =====
+        corrector_rhs!(r_c, p, d, Δp_aff, Δd_aff, S, σ * μ_curr, B, uplo)
+        newton_step!(Δp, Δy, Δd, divwrk, itrwrk, r, F, B, H,
+                     r_c, r_p, r_d; α, atol, rtol, itmax)
 
         # Step to boundary
         τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, B, uplo; γ)

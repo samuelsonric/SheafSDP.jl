@@ -38,30 +38,48 @@ function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
     return L
 end
 
+# form the augmented block
+#
+#   F = A + α Bᵀ B
+#
+# and factorize it
+function factor_kkt!(
+    facwrk::FactorizationWorkspace{T},
+    F::ChordalCholesky{UPLO, T},
+    L::ChordalTriangular{:N, UPLO, T},
+    A::BlockSparseMatrix{T};
+    α::Real=1.0
+) where {UPLO, T}
+    n = size(F, 1)
+    @assert size(L, 1) == n
+
+    copydia!(F.L, A)
+    axpby!(α, L, 1, F.L)
+    cholesky!(facwrk, F)
+    return
+end
+
 #
 # solve the KKT system
 #
 #   [ A Bᵀ ] [ x ] = [ f ]
 #   [ B 0  ] [ y ]   [ g ]
 #
-function solve_kkt!(
-    facwrk::FactorizationWorkspace{T, I},
-    divwrk::DivisionWorkspace{T, I},
+function solve_kkt_factored!(
+    divwrk::DivisionWorkspace{T},
     itrwrk::IterationWorkspace{T},
     x::AbstractVector{T},
     y::AbstractVector{T},
     r::AbstractVector{T},
     F::ChordalCholesky{UPLO, T},
-    L::L_t,
     B::BlockSparseMatrix{T},
-    A::BlockSparseMatrix{T},
     f::AbstractVector{T},
     g::AbstractVector{T};
     α::Real=1.0,
     atol::Real=√eps(T),
     rtol::Real=√eps(T),
     itmax::Integer=1000
-) where {UPLO, T, I, L_t <: ChordalTriangular}
+) where {UPLO, T}
     m, n = size(B)
 
     @assert length(x) == n
@@ -70,17 +88,6 @@ function solve_kkt!(
     @assert length(f) == n
     @assert length(g) == m
     @assert size(F, 1) == n
-    @assert size(L, 1) == n
-    #
-    # initialize
-    #
-    #   F = A + α Bᵀ B
-    #
-    # and factorize F.
-    #
-    copydia!(F.L, A)
-    axpby!(α, L, 1, F.L)
-    cholesky!(facwrk, F)
     #
     # solve for x:
     #
@@ -142,4 +149,36 @@ function solve_kkt!(
     ldiv!(divwrk, F, x)
 
     return niter(itrwrk)
+end
+
+# form the augmented block
+#
+#   F = A + α Bᵀ B
+#
+# and factorize it. then solve
+# the KKT system
+#
+#   [ A Bᵀ ] [ x ] = [ f ]
+#   [ B 0  ] [ y ]   [ g ]
+#
+function solve_kkt!(
+    facwrk::FactorizationWorkspace{T},
+    divwrk::DivisionWorkspace{T},
+    itrwrk::IterationWorkspace{T},
+    x::AbstractVector{T},
+    y::AbstractVector{T},
+    r::AbstractVector{T},
+    F::ChordalCholesky{UPLO, T},
+    L::ChordalTriangular{:N, UPLO, T},
+    B::BlockSparseMatrix{T},
+    A::BlockSparseMatrix{T},
+    f::AbstractVector{T},
+    g::AbstractVector{T};
+    α::Real=1.0,
+    atol::Real=√eps(T),
+    rtol::Real=√eps(T),
+    itmax::Integer=1000
+) where {UPLO, T}
+    factor_kkt!(facwrk, F, L, A; α)
+    return solve_kkt_factored!(divwrk, itrwrk, x, y, r, F, B, f, g; α, atol, rtol, itmax)
 end
