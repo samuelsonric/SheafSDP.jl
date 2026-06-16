@@ -10,15 +10,13 @@ struct Iterate{T}
     p::Vector{T}    # primal (svec)
     d::Vector{T}    # dual slack (svec)
     y::Vector{T}    # dual multiplier
-    s::Vector{T}    # NT scaling (svec)
 end
 
 function Iterate{T}(n::Integer, m::Integer) where {T}
     p = zeros(T, n)
     d = zeros(T, n)
     y = zeros(T, m)
-    s = zeros(T, n)
-    return Iterate{T}(p, d, y, s)
+    return Iterate{T}(p, d, y)
 end
 
 #
@@ -95,24 +93,25 @@ end
 # G = L_Pᵀ L_D
 # SVD: G = U Σ Vᵀ
 #
-# Stores L_P, U, and Σ (singular values). These define:
+# Stores L_P, L_D, U, and Σ (singular values). These define:
 #   R = L_P U Σ^{-1/2}
 #   W = R Rᵀ  (NT scaling, satisfies W D W = P)
 #   W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
 #
 # The singular values are also the eigenvalues of V = W^{1/2} D W^{1/2}
 #
-function meanblock!(LP_out::AbstractMatrix{T}, U_out::AbstractMatrix{T}, s_out::AbstractVector{T},
-                    work::AbstractMatrix{T}, P::AbstractMatrix{T}, D::AbstractMatrix{T}) where {T}
+function meanblock!(LP_out::AbstractMatrix{T}, LD_out::AbstractMatrix{T},
+                    U_out::AbstractMatrix{T}, s_out::AbstractVector{T},
+                    P::AbstractMatrix{T}, D::AbstractMatrix{T}) where {T}
     # L_P = chol(P)
     copyto!(LP_out, P)
     cholesky!(Symmetric(LP_out, :L))
     L_P = LowerTriangular(LP_out)
 
     # L_D = chol(D)
-    copyto!(work, D)
-    cholesky!(Symmetric(work, :L))
-    L_D = LowerTriangular(work)
+    copyto!(LD_out, D)
+    cholesky!(Symmetric(LD_out, :L))
+    L_D = LowerTriangular(LD_out)
 
     # G = L_Pᵀ L_D
     G = L_P' * L_D
@@ -291,10 +290,11 @@ function smat!(M::AbstractMatrix{T}, v::AbstractVector{T}, uplo::Val{UPLO}) wher
 end
 
 #
-# allocate block-diagonal matrices H, LP, U and singular values sv
+# allocate block-diagonal matrices H, LP, LD, U and singular values sv
 #
 # H has blocks of size trinum(d_v) × trinum(d_v) (Hessian)
 # LP has blocks of size d_v × d_v (lower triangular Cholesky factor of P)
+# LD has blocks of size d_v × d_v (lower triangular Cholesky factor of D)
 # U has blocks of size d_v × d_v (orthogonal matrix from SVD)
 # sv is a vector of length ν storing stacked singular values
 #
@@ -305,6 +305,7 @@ function allocate_hess(::Type{T}, B::BlockSparseMatrix) where {T}
     nv = nvtxs(B)
     H_blocks = Matrix{T}[]
     LP_blocks = Matrix{T}[]
+    LD_blocks = Matrix{T}[]
     U_blocks = Matrix{T}[]
     total_d = 0
 
@@ -313,26 +314,29 @@ function allocate_hess(::Type{T}, B::BlockSparseMatrix) where {T}
         d_v = triroot(n_v)
         push!(H_blocks, zeros(T, n_v, n_v))
         push!(LP_blocks, zeros(T, d_v, d_v))
+        push!(LD_blocks, zeros(T, d_v, d_v))
         push!(U_blocks, zeros(T, d_v, d_v))
         total_d += d_v
     end
 
     H = blocksparse(1:nv, 1:nv, H_blocks, nv, nv)
     LP = blocksparse(1:nv, 1:nv, LP_blocks, nv, nv)
+    LD = blocksparse(1:nv, 1:nv, LD_blocks, nv, nv)
     U = blocksparse(1:nv, 1:nv, U_blocks, nv, nv)
     sv = zeros(T, total_d)
-    return H, LP, U, sv
+    return H, LP, LD, U, sv
 end
 
 #
-# assemble block-diagonal Hessian H and scaling factors LP, U, sv
+# assemble block-diagonal Hessian H and scaling factors LP, LD, U, sv
 #
 # H_v = W_v⁻¹ ⊗ₛ W_v⁻¹ where W_v is NT scaling point for (P_v, D_v)
 # LP_v = Cholesky factor of P_v
+# LD_v = Cholesky factor of D_v
 # U_v = orthogonal matrix from SVD
 # sv contains stacked singular values (eigenvalues of V_v)
 #
-function hess!(H::BlockSparseMatrix{T}, LP::BlockSparseMatrix{T},
+function hess!(H::BlockSparseMatrix{T}, LP::BlockSparseMatrix{T}, LD::BlockSparseMatrix{T},
                U::BlockSparseMatrix{T}, sv::AbstractVector{T},
                p::AbstractVector{T}, d::AbstractVector{T},
                B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
@@ -345,6 +349,7 @@ function hess!(H::BlockSparseMatrix{T}, LP::BlockSparseMatrix{T},
 
         H_v = block(H, v, v, v)
         LP_v = block(LP, v, v, v)
+        LD_v = block(LD, v, v, v)
         U_v = block(U, v, v, v)
         sv_v = view(sv, sv_offset+1:sv_offset+d_v)
 
@@ -356,11 +361,11 @@ function hess!(H::BlockSparseMatrix{T}, LP::BlockSparseMatrix{T},
         smat!(D_v, view(d, r), uplo)
         symmetrize!(D_v, uplo)
 
-        # Compute LP_v, U_v, sv_v via meanblock!
-        work = zeros(T, d_v, d_v)
-        meanblock!(LP_v, U_v, sv_v, work, P_v, D_v)
+        # Compute LP_v, LD_v, U_v, sv_v via meanblock!
+        meanblock!(LP_v, LD_v, U_v, sv_v, P_v, D_v)
 
         # Compute H_v via hessblock!
+        work = zeros(T, d_v, d_v)
         hessblock!(H_v, LP_v, U_v, sv_v, work, uplo)
 
         sv_offset += d_v
@@ -436,12 +441,14 @@ end
 # Full Mehrotra corrector with 2nd-order term:
 #   R_c,v = σμ D_v⁻¹ - P_v - W^{1/2} L_V⁻¹(dp^a ∘ dd^a) W^{1/2}
 #
-# Uses LP (triangular), U (orthogonal), s (singular values) for efficient computation:
+# Uses LP, LD (triangular), U (orthogonal), s (singular values) for efficient computation:
 #   R = LP U Σ^{-1/2}, so R⁻¹ = Σ^{1/2} U' LP⁻¹
+#   D⁻¹ = LD⁻ᵀ LD⁻¹ (reuses stored Cholesky factor)
 #
 function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::AbstractVector{T},
                         Δp::AbstractVector{T}, Δd::AbstractVector{T},
-                        LP::BlockSparseMatrix{T}, U::BlockSparseMatrix{T}, sv::AbstractVector{T},
+                        LP::BlockSparseMatrix{T}, LD::BlockSparseMatrix{T},
+                        U::BlockSparseMatrix{T}, sv::AbstractVector{T},
                         σμ::Real, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
     sv_offset = 0
 
@@ -452,32 +459,29 @@ function corrector_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}, d::Abstrac
 
         # Build matrices from svec
         P_v = zeros(T, d_v, d_v)
-        D_v = zeros(T, d_v, d_v)
         ΔP_v = zeros(T, d_v, d_v)
         ΔD_v = zeros(T, d_v, d_v)
 
         smat!(P_v, view(p, r), uplo)
         symmetrize!(P_v, uplo)
-        smat!(D_v, view(d, r), uplo)
-        symmetrize!(D_v, uplo)
         smat!(ΔP_v, view(Δp, r), uplo)
         symmetrize!(ΔP_v, uplo)
         smat!(ΔD_v, view(Δd, r), uplo)
         symmetrize!(ΔD_v, uplo)
 
-        LP_v = block(LP, v, v, v)
+        L_P = LowerTriangular(block(LP, v, v, v))
+        L_D = LowerTriangular(block(LD, v, v, v))
         U_v = block(U, v, v, v)
         s_v = view(sv, sv_offset+1:sv_offset+d_v)
-        L_P = LowerTriangular(LP_v)
 
-        # Compute D_v⁻¹ via Cholesky
-        D_inv = inv(cholesky(Symmetric(D_v)))
+        # D⁻¹ = L_D⁻ᵀ L_D⁻¹ (reuse stored Cholesky factor)
+        D_inv = L_D' \ (L_D \ Matrix{T}(I, d_v, d_v))
 
         # Inverse Lyapunov solve using structured factors:
         # R = L_P U Σ^{-1/2}, R⁻¹ = Σ^{1/2} U' L_P⁻¹
         # A = R⁻¹ (ΔP ΔD R) = Σ^{1/2} U' (L_P⁻¹ ΔP ΔD L_P) U Σ^{-1/2}
         X = L_P \ (ΔP_v * ΔD_v * L_P)   # triangular solve
-        Y = U_v' * X * U_v                       # orthogonal conjugation
+        Y = U_v' * X * U_v               # orthogonal conjugation
         # Combined scaling, symmetrization, Lyapunov divide, and unscaling:
         # B_ij = (Y_ij/s_j + Y_ji/s_i) / (s_i + s_j)
         B_mat = (Y ./ s_v' + Y' ./ s_v) ./ (s_v .+ s_v')
@@ -506,19 +510,15 @@ end
 # λ_min = minimum eigenvalue of M
 # τ_max = (λ_min < 0) ? -γ/λ_min : 1.0
 #
-function step_length_block(X::AbstractMatrix{T}, ΔX::AbstractMatrix{T}, γ::Real) where {T}
-    # Factor X = L Lᵀ
-    C = cholesky(Symmetric(X))
-    L = C.L
-
-    # M = L⁻¹ ΔX L⁻ᵀ
+function step_length_block(L::LowerTriangular{T}, ΔX::AbstractMatrix{T}, γ::Real) where {T}
+    # M = L⁻¹ ΔX L⁻ᵀ (L is precomputed Cholesky factor)
     M = L \ ΔX / L'
 
     # Symmetrize M (for numerical stability)
     M = (M + M') / 2
 
-    # Minimum eigenvalue
-    λ_min = minimum(eigvals(Symmetric(M)))
+    # Minimum eigenvalue (only need the smallest one)
+    λ_min = eigmin(Symmetric(M))
 
     # Step length
     if λ_min < 0
@@ -538,7 +538,9 @@ end
 # γ ∈ (0, 1) is the fraction of the way to the boundary
 # (e.g., γ = 0.99 stays 1% away from boundary)
 #
-function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T}, Δp::AbstractVector{T}, Δd::AbstractVector{T}, B::BlockSparseMatrix{T}, uplo::Val{UPLO}; γ::Real=0.99) where {T, UPLO}
+function step_to_boundary(Δp::AbstractVector{T}, Δd::AbstractVector{T},
+                          LP::BlockSparseMatrix{T}, LD::BlockSparseMatrix{T},
+                          B::BlockSparseMatrix{T}, uplo::Val{UPLO}; γ::Real=0.99) where {T, UPLO}
     τ_p = one(T)
     τ_d = one(T)
 
@@ -547,24 +549,21 @@ function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T}, Δp::Abstr
         n_v = ncols(B, v)
         d_v = triroot(n_v)
 
-        # Build matrices from svec
-        P_v = zeros(T, d_v, d_v)
-        D_v = zeros(T, d_v, d_v)
+        # Get precomputed Cholesky factors
+        LP_v = LowerTriangular(block(LP, v, v, v))
+        LD_v = LowerTriangular(block(LD, v, v, v))
+
+        # Build direction matrices from svec
         ΔP_v = zeros(T, d_v, d_v)
         ΔD_v = zeros(T, d_v, d_v)
-
-        smat!(P_v, view(p, r), uplo)
-        symmetrize!(P_v, uplo)
-        smat!(D_v, view(d, r), uplo)
-        symmetrize!(D_v, uplo)
         smat!(ΔP_v, view(Δp, r), uplo)
         symmetrize!(ΔP_v, uplo)
         smat!(ΔD_v, view(Δd, r), uplo)
         symmetrize!(ΔD_v, uplo)
 
-        # Step lengths for this block
-        τ_p_v = step_length_block(P_v, ΔP_v, γ)
-        τ_d_v = step_length_block(D_v, ΔD_v, γ)
+        # Step lengths for this block (reusing stored factors)
+        τ_p_v = step_length_block(LP_v, ΔP_v, γ)
+        τ_d_v = step_length_block(LD_v, ΔD_v, γ)
 
         τ_p = min(τ_p, τ_p_v)
         τ_d = min(τ_d, τ_d_v)
@@ -729,7 +728,7 @@ function solve!(
     Δy = zeros(T, m)
     Δd = zeros(T, n)
 
-    H, LP, U, sv = allocate_hess(T, B)
+    H, LP, LD, U, sv = allocate_hess(T, B)
 
     # History tracking
     μ_history = T[]
@@ -776,8 +775,8 @@ function solve!(
             end
         end
 
-        # Assemble H (NT scaling + Hessian), LP, U, sv for Lyapunov solve
-        hess!(H, LP, U, sv, p, d, B, uplo)
+        # Assemble H (NT scaling + Hessian), LP, LD, U, sv for Lyapunov solve
+        hess!(H, LP, LD, U, sv, p, d, B, uplo)
 
         # Scale α so that τ_aug=1 is a reasonable default
         α = τ_aug * norm(Symmetric(H, UPLO)) / norm_B_sq
@@ -791,7 +790,7 @@ function solve!(
                      r_c, r_p, r_d; α, atol, rtol, itmax)
 
         # Step to boundary for affine direction
-        τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, B, uplo; γ=one(T))
+        τ_p_aff, τ_d_aff = step_to_boundary(Δp_aff, Δd_aff, LP, LD, B, uplo; γ=one(T))
 
         # Compute μ_aff
         p_aff = p + τ_p_aff * Δp_aff
@@ -802,12 +801,12 @@ function solve!(
         σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
 
         # ===== Corrector step (reuses same factorization) =====
-        corrector_rhs!(r_c, p, d, Δp_aff, Δd_aff, LP, U, sv, σ * μ_curr, B, uplo)
+        corrector_rhs!(r_c, p, d, Δp_aff, Δd_aff, LP, LD, U, sv, σ * μ_curr, B, uplo)
         newton_step!(Δp, Δy, Δd, divwrk, itrwrk, r, F, B, H,
                      r_c, r_p, r_d; α, atol, rtol, itmax)
 
         # Step to boundary
-        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, B, uplo; γ)
+        τ_p, τ_d = step_to_boundary(Δp, Δd, LP, LD, B, uplo; γ)
         push!(τ_p_history, τ_p)
         push!(τ_d_history, τ_d)
 
