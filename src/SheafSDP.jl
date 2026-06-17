@@ -11,14 +11,13 @@ using LinearOperators: LinearOperator
 using BlockSparseArrays: BlockSparseMatrix, block, colrange, nvtxs, vtxs, ncols, blocksparse
 using Base: oneto
 
-include("it.jl")
 include("cone/cone.jl")
 include("sheaf.jl")
-include("kkt.jl")
+include("kkt/kkt.jl")
 include("ipm.jl")
 
 export sheaf, solve_kkt!, factor_kkt!
 export solve!, initialize!, SolverResult
-export Cone, SDP, POS, SOC
+export Cone, SDP, POS, SOC, NOC
 
 end # module SheafSDP

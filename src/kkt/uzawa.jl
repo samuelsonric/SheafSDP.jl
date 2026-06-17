@@ -1,3 +1,29 @@
+struct UzawaWorkspace{
+        UPLO,
+        T,
+        I <: Integer,
+        Fac <: ChordalCholesky{UPLO, T, I},
+        Tri <: ChordalTriangular{:N, UPLO, T, I},
+        FacWrk <: FactorizationWorkspace{T, I},
+        DivWrk <: DivisionWorkspace{T, I},
+        ItrWrk <: IterationWorkspace{T}
+    } <: KKTWorkspace{T}
+    F::Fac
+    L::Tri
+    facwrk::FacWrk
+    divwrk::DivWrk
+    itrwrk::ItrWrk
+    r::Vector{T}
+end
+
+function UzawaWorkspace(F::ChordalCholesky{UPLO, T, I}, L::ChordalTriangular{:N, UPLO, T, I}, m::Integer) where {UPLO, T, I <: Integer}
+    facwrk = FactorizationWorkspace(F)
+    divwrk = DivisionWorkspace(F, 1)
+    itrwrk = CgWorkspace(m, m, Vector{T})
+    r = zeros(T, m)
+    UzawaWorkspace(F, L, facwrk, divwrk, itrwrk, r)
+end
+
 #
 # copy a block diagonal matrix A into F:
 #
@@ -38,12 +64,16 @@ function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
     return L
 end
 
+function init_kkt!(kktwrk::UzawaWorkspace, A::BlockSparseMatrix; α::Real=1.0)
+    init_uzw!(kktwrk.facwrk, kktwrk.F, kktwrk.L, A; α)
+end
+
 # form the augmented block
 #
 #   F = A + α Bᵀ B
 #
 # and factorize it
-function factor_kkt!(
+function init_uzw!(
         facwrk::FactorizationWorkspace{T},
         F::ChordalCholesky{UPLO, T},
         L::ChordalTriangular{:N, UPLO, T},
@@ -57,6 +87,21 @@ function factor_kkt!(
     axpby!(α, L, 1, F.L)
     cholesky!(facwrk, F)
     return
+end
+
+function solve_kkt!(
+    kktwrk::UzawaWorkspace{UPLO, T},
+    x::AbstractVector{T},
+    y::AbstractVector{T},
+    B::BlockSparseMatrix{T},
+    f::AbstractVector{T},
+    g::AbstractVector{T};
+    α::Real=1.0,
+    atol::Real=√eps(T),
+    rtol::Real=√eps(T),
+    itmax::Integer=1000
+) where {UPLO, T}
+    solve_kkt!(kktwrk.divwrk, kktwrk.itrwrk, x, y, kktwrk.r, kktwrk.F, B, f, g; α, atol, rtol, itmax)
 end
 
 #

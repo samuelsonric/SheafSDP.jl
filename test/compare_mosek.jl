@@ -54,18 +54,21 @@ y0 = randn(m)
 c = B_sp' * y0 + d0
 g = B_sp * p0
 
+# Q = 0 (no quadratic term)
+Q_obj = SheafSDP.allocate_H(Float64, B)
+
 println("Problem size: n=$n, m=$m, ne=$ne edges")
 println()
 
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, F, L; feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt_frac=32000.0)
+solve!(p, d, y, c, g, B, F, L; Q=Q_obj, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt_frac=32000.0)
 
 # Solve with our solver (timed after warmup)
 println("Solving with SheafSDP...")
 p, d, y = copy(p0), copy(d0), copy(y0)
 t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
-                               feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt_frac=32000.0)
+                               Q=Q_obj, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt_frac=32000.0)
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  objective: $obj_sheaf")

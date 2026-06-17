@@ -1,23 +1,11 @@
 #
-# primal-dual iterate for SDP
+# primal-dual interior point method
 #
 # primal: min c'p  s.t. Bp = g, P ≻ 0
 # dual:   max g'y  s.t. B'y + d = c, D ≻ 0
 #
 # p, d are svec representations of block-diagonal P, D
 #
-struct Iterate{T}
-    p::Vector{T}    # primal (svec)
-    d::Vector{T}    # dual slack (svec)
-    y::Vector{T}    # dual multiplier
-end
-
-function Iterate{T}(n::Integer, m::Integer) where {T}
-    p = zeros(T, n)
-    d = zeros(T, n)
-    y = zeros(T, m)
-    return Iterate{T}(p, d, y)
-end
 
 #
 # solver parameters
@@ -35,22 +23,6 @@ end
     stall_window::Int = 5           # stall detection window
     stall_threshold::T = 0.99       # stall detection threshold
     τ_collapse_threshold::T = 1e-6  # step collapse threshold
-end
-
-#
-# solver workspaces
-#
-struct Workspace{T}
-    facwrk::FactorizationWorkspace{T}
-    divwrk::DivisionWorkspace{T}
-    itrwrk::IterationWorkspace{T}
-end
-
-function Workspace(F::ChordalCholesky{UPLO, T}, m::Integer) where {UPLO, T}
-    facwrk = FactorizationWorkspace(F)
-    divwrk = DivisionWorkspace(F, 1)
-    itrwrk = CgWorkspace(m, m, Vector{T})
-    Workspace{T}(facwrk, divwrk, itrwrk)
 end
 
 #
@@ -79,13 +51,14 @@ end
 #   r_p = g − B p          (primal feasibility)
 #   r_d = c − Bᵀy − d      (dual feasibility)
 #
-function residuals!(rp::AbstractVector, rd::AbstractVector, B, p::AbstractVector, d::AbstractVector, y::AbstractVector, c::AbstractVector, g::AbstractVector)
+function residuals!(rp::AbstractVector, rd::AbstractVector, B, p::AbstractVector, d::AbstractVector, y::AbstractVector, c::AbstractVector, g::AbstractVector, Q)
     # r_p = g - B p
     copyto!(rp, g)
     mul!(rp, B, p, -1, 1)
 
-    # r_d = c - Bᵀy - d
+    # r_d = c + Qp - Bᵀy - d
     copyto!(rd, c)
+    mul!(rd, Symmetric(Q, :L), p, 1, 1)
     mul!(rd, B', y, -1, 1)
     axpy!(-1, d, rd)
 
@@ -134,7 +107,7 @@ end
 #
 function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
                cones::Vector{<:Cone}, p::AbstractVector{T}, d::AbstractVector{T},
-               B::BlockSparseMatrix{T}) where {T}
+               B::BlockSparseMatrix{T}, Q) where {T}
     for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
         r = colrange(B, v)
         H_v = block(H, v, v, v)
@@ -148,6 +121,9 @@ function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
 
         # Compute Hessian block
         hess!(H_v, p_v, d_v, c)
+
+        # Fold Q_v into H_v
+        axpy!(true, block(Q, v, v, v), H_v)
     end
 end
 
@@ -161,20 +137,18 @@ end
 # solve_kkt! solves [A Bᵀ; B 0][x; y] = [f; g]
 # so we set: A = H, x = Δp, y = -Δy, f = (provided), g = r_p
 #
-# After solving, recover Δy = -y and Δd = r_d - Bᵀ Δy
+# After solving, recover Δy = -y and Δd = r_d - Bᵀ Δy + Q Δp
 #
 function newton_step!(
     Δp::AbstractVector{T},
     Δy::AbstractVector{T},
     Δd::AbstractVector{T},
-    divwrk::DivisionWorkspace{T},
-    itrwrk::IterationWorkspace{T},
-    r::AbstractVector{T},
-    F::ChordalCholesky{UPLO, T},
+    kktwrk::UzawaWorkspace{UPLO, T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
     r_p::AbstractVector{T},
-    r_d::AbstractVector{T};
+    r_d::AbstractVector{T},
+    Q;
     α::Real=1.0,
     atol::Real=√eps(T),
     rtol::Real=√eps(T),
@@ -182,14 +156,15 @@ function newton_step!(
 ) where {UPLO, T}
     # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
     # assumes F is already factored
-    solve_kkt!(divwrk, itrwrk, Δp, Δy, r, F, B, f, r_p; α, atol, rtol, itmax)
+    solve_kkt!(kktwrk, Δp, Δy, B, f, r_p; α, atol, rtol, itmax)
 
     # recover Δy = -w (solve_kkt! returns w in Δy)
     lmul!(-1, Δy)
 
-    # recover Δd = r_d - Bᵀ Δy
+    # recover Δd = r_d - Bᵀ Δy + Q Δp
     copyto!(Δd, r_d)
     mul!(Δd, B', Δy, -1, 1)
+    mul!(Δd, Symmetric(Q, :L), Δp, 1, 1)
 
     return
 end
@@ -388,6 +363,7 @@ function solve!(
     B::BlockSparseMatrix{T},
     F::ChordalCholesky{UPLO, T},
     L::ChordalTriangular{:N, UPLO, T};
+    Q::BlockSparseMatrix{T},
     cones::Vector{<:Cone}=[SDP() for _ in vtxs(B)],
     step_frac::Real=0.99,
     feas_tol::Real=1e-8,
@@ -409,8 +385,7 @@ function solve!(
 
     params = Parameters{T}(; step_frac, feas_tol, gap_tol, itmax, kkt_frac, kkt_atol, kkt_rtol, kkt_itmax,
                            verbose, stall_window, stall_threshold, τ_collapse_threshold)
-    workspace = Workspace(F, m)
-    r = zeros(T, m)
+    kkt = UzawaWorkspace(F, L, m)
 
     r_p = zeros(T, m)
     r_d = zeros(T, n)
@@ -440,8 +415,8 @@ function solve!(
 
     for iter in 1:params.itmax
         # Compute residuals and μ
-        residuals!(r_p, r_d, B, p, d, y, c, g)
-        μ_curr = mu(p, d, ν)
+        residuals!(r_p, r_d, B, p, d, y, c, g, Q)
+        μ_curr = ν > 0 ? mu(p, d, ν) : zero(T)
         push!(μ_history, μ_curr)
 
         # Track residual norms
@@ -455,7 +430,8 @@ function solve!(
         end
 
         # Check convergence
-        if norm_rp < params.feas_tol && norm_rd < params.feas_tol && μ_curr < params.gap_tol
+        gap_ok = ν == 0 || μ_curr < params.gap_tol
+        if norm_rp < params.feas_tol && norm_rd < params.feas_tol && gap_ok
             status = :optimal
             return SolverResult{T}(
                 copy(p), copy(d), copy(y), true, iter,
@@ -473,19 +449,19 @@ function solve!(
         end
 
         # Assemble H (NT scaling + Hessian) via cone-dispatched interface
-        hess!(H, caches, cones, p, d, B)
+        hess!(H, caches, cones, p, d, B, Q)
 
         # Scale α so that kkt_frac=1 is a reasonable default
         α = params.kkt_frac * norm(Symmetric(H, :L)) / norm_B_sq
 
         # Factor F = H + α B'B once per iteration
-        factor_kkt!(workspace.facwrk, F, L, H; α)
+        init_kkt!(kkt, H; α)
 
         # ===== Predictor (affine) step =====
         # f = H·(-p) - r_d = -d - r_d (by NT property: H·p = d)
         @. f = -(d + r_d)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, workspace.divwrk, workspace.itrwrk, r, F, B,
-                     f, r_p, r_d; α, atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
+        newton_step!(Δp_aff, Δy_aff, Δd_aff, kkt, B,
+                     f, r_p, r_d, Q; α, atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
 
         # Step to boundary for affine direction
         τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; step_frac=one(T))
@@ -502,8 +478,8 @@ function solve!(
         # corrector_rhs! now returns H·r_c directly per block
         corrector_rhs!(f, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
         axpy!(-1, r_d, f)
-        newton_step!(Δp, Δy, Δd, workspace.divwrk, workspace.itrwrk, r, F, B,
-                     f, r_p, r_d; α, atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
+        newton_step!(Δp, Δy, Δd, kkt, B,
+                     f, r_p, r_d, Q; α, atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
 
         # Step to boundary
         τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; step_frac=params.step_frac)

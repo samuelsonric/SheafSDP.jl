@@ -90,3 +90,4 @@ function cache end
 include("sdp.jl")
 include("pos.jl")
 include("soc.jl")
+include("noc.jl")
