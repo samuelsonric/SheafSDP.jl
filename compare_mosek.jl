@@ -3,6 +3,7 @@ using SparseArrays
 using LinearAlgebra
 using Random
 using JuMP
+import MathOptInterface as MOI
 using MosekTools
 using AppleAccelerate
 using SheafSDP: trinum, triroot, svec!, smat!, symmetrize!
@@ -166,8 +167,9 @@ for j in 1:n
 end
 @objective(model2, Min, obj2)
 
-print("  solve (after warmup): ")
-@time optimize!(model2)
+t2 = @elapsed optimize!(model2)
+println("  time: $(round(t2, digits=3))s")
+println("  barrier iters: $(MOI.get(model2, MOI.BarrierIterations()))")
 obj_mosek = objective_value(model2)
 println("  objective: $obj_mosek")
 println()
