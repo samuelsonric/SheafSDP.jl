@@ -12,6 +12,7 @@ const FArray{T, N} = FixedSizeArrayDefault{T, N}
 const FMatrix{T} = FArray{T, 2}
 const FVector{T} = FArray{T, 1}
 const FScalar{T} = FArray{T, 0}
+const Scalar{T} = Array{T, 0}
 
 """
     degree(cone::Cone, n::Int) -> Int
