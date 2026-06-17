@@ -4,12 +4,12 @@
 
 struct SDP <: Cone end
 
-# View-based cache for SDP
-struct SDPCache{T}
+struct SDPCache{T} <: AbstractCache{SDP}
+    cone::SDP
     LP::FMatrixView{T}    # lower triangular Cholesky factor of P (d×d)
     LD::FMatrixView{T}    # lower triangular Cholesky factor of D (d×d)
     U::FMatrixView{T}     # orthogonal matrix from SVD (d×d)
-    s::FVectorView{T}    # singular values (d)
+    s::FVectorView{T}     # singular values (d)
 end
 
 #
@@ -27,6 +27,7 @@ function symmetrize!(M::AbstractMatrix)
             M[i, j] = M[j, i]
         end
     end
+
     return M
 end
 
@@ -115,9 +116,14 @@ end
 #   R = L_P U Σ^{-1/2}
 #   W = R Rᵀ  (NT scaling, satisfies W D W = P)
 #   W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
-function meanblock!(LP_out::AbstractMatrix{T}, LD_out::AbstractMatrix{T},
-                    U_out::AbstractMatrix{T}, s_out::AbstractVector{T},
-                    P::AbstractMatrix{T}, D::AbstractMatrix{T}) where {T}
+function meanblock!(
+        LP_out::AbstractMatrix{T},
+        LD_out::AbstractMatrix{T},
+        U_out::AbstractMatrix{T},
+        s_out::AbstractVector{T},
+        P::AbstractMatrix{T},
+        D::AbstractMatrix{T}
+    ) where {T}
     # L_P = chol(P)
     copyto!(LP_out, P)
     cholesky!(Symmetric(LP_out, :L))
@@ -143,8 +149,12 @@ end
 
 # compute H_v = W⁻¹ ⊗ₛ W⁻¹
 # W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹ where W = R R' with R = L_P U Σ^{-1/2}
-function hessblock!(H::AbstractMatrix{T}, LP::AbstractMatrix{T}, U::AbstractMatrix{T},
-                    s::AbstractVector{T}) where {T}
+function hessblock!(
+        H::AbstractMatrix{T},
+        LP::AbstractMatrix{T},
+        U::AbstractMatrix{T},
+        s::AbstractVector{T}
+    ) where {T}
     L_P = LowerTriangular(LP)
 
     # W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
@@ -152,32 +162,6 @@ function hessblock!(H::AbstractMatrix{T}, LP::AbstractMatrix{T}, U::AbstractMatr
     Winv = L_P' \ UΣUt / L_P
 
     return skron!(H, Winv)
-end
-
-# step length to boundary for a single SDP block
-#
-# Computes largest τ such that X + τ ΔX ⪰ 0
-# where X is SPD and ΔX is symmetric
-#
-# M = L⁻¹ ΔX L⁻ᵀ where X = L Lᵀ
-# λ_min = minimum eigenvalue of M
-# τ_max = (λ_min < 0) ? -γ/λ_min : 1.0
-function step_length_block(L::LowerTriangular{T}, ΔX::AbstractMatrix{T}, γ::Real) where {T}
-    # M = L⁻¹ ΔX L⁻ᵀ (L is precomputed Cholesky factor)
-    M = L \ ΔX / L'
-
-    # Symmetrize M (for numerical stability)
-    M = (M + M') / 2
-
-    # Minimum eigenvalue (only need the smallest one)
-    λ_min = eigmin(Symmetric(M))
-
-    # Step length
-    if λ_min < 0
-        return min(one(T), -γ / λ_min)
-    else
-        return one(T)
-    end
 end
 
 #
@@ -188,13 +172,13 @@ end
 degree(::SDP, n::Int) = triroot(n)
 
 # cache size: LP(d²) + LD(d²) + U(d²) + s(d) = 3d² + d
-function cache_size(::SDP, n::Int)
+function cachesize(::SDP, n::Int)
     d = triroot(n)
     return 3 * d^2 + d
 end
 
 # construct view-based cache from Caches
-function cache(c::Caches{T}, i::Int, ::SDP) where T
+function cache(c::Caches{T}, i::Int, cone::SDP) where T
     n = c.xcol[i+1] - c.xcol[i]
     d = triroot(n)
     data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
@@ -206,90 +190,137 @@ function cache(c::Caches{T}, i::Int, ::SDP) where T
     U  = reshape(view(data, 2d2+1:3d2), d, d)
     s  = view(data, 3d2+1:3d2+d)
 
-    SDPCache(LP, LD, U, s)
+    SDPCache(cone, LP, LD, U, s)
 end
 
 function identity!(x::AbstractVector{T}, ::SDP) where {T}
     d = triroot(length(x))
-    Id = Matrix{T}(I, d, d)
-    svec!(x, Id)
+    fill!(x, zero(T))
+    k = 1
+    for j in 1:d
+        x[k] = one(T)
+        k += d - j + 1
+    end
     return x
 end
 
-function update_scaling!(cache::SDPCache{T}, ::SDP,
-                         p::AbstractVector, d::AbstractVector) where {T}
-    d_v = size(cache.LP, 1)
+function sdpscale!(
+        LP::AbstractMatrix{T},
+        LD::AbstractMatrix{T},
+        U::AbstractMatrix{T},
+        s::AbstractVector{T},
+        p::AbstractVector,
+        d::AbstractVector
+    ) where {T}
+    d_v = size(LP, 1)
 
-    # Build P and D from svec
     P = zeros(T, d_v, d_v)
     D = zeros(T, d_v, d_v)
     smat!(P, p)
-    symmetrize!(P)
     smat!(D, d)
-    symmetrize!(D)
 
-    # Compute scaling factors via meanblock!
-    meanblock!(cache.LP, cache.LD, cache.U, cache.s, P, D)
+    meanblock!(LP, LD, U, s, Symmetric(P, :L), Symmetric(D, :L))
     return
 end
 
-function hessian_block!(H::AbstractMatrix, cache::SDPCache, ::SDP)
+function scale!(p::AbstractVector, d::AbstractVector, cache::SDPCache{T}) where {T}
+    sdpscale!(cache.LP, cache.LD, cache.U, cache.s, p, d)
+end
+
+function hess!(
+        H::AbstractMatrix{T},
+        ::AbstractVector{T},
+        ::AbstractVector{T},
+        cache::SDPCache{T}
+    ) where {T}
     hessblock!(H, cache.LP, cache.U, cache.s)
     return H
 end
 
-function corrector_term!(rc::AbstractVector, cache::SDPCache{T}, ::SDP,
-                         p::AbstractVector, d::AbstractVector,
-                         Δp::AbstractVector, Δd::AbstractVector,
-                         σμ::Real) where {T}
-    d_v = size(cache.LP, 1)
+# H·R_c = L_P⁻ᵀ U [σμI - Σ² - Σ B_mat Σ] Uᵀ L_P⁻¹
+function sdpcorr!(
+        r::AbstractVector{T},
+        LP::AbstractMatrix{T},
+        U::AbstractMatrix{T},
+        s::AbstractVector{T},
+        Δp::AbstractVector{T},
+        Δd::AbstractVector{T},
+        σμ::Real
+    ) where {T}
+    d_v = size(LP, 1)
 
-    # Build matrices from svec
-    P_v = zeros(T, d_v, d_v)
     ΔP_v = zeros(T, d_v, d_v)
     ΔD_v = zeros(T, d_v, d_v)
 
-    smat!(P_v, p)
-    symmetrize!(P_v)
     smat!(ΔP_v, Δp)
-    symmetrize!(ΔP_v)
     smat!(ΔD_v, Δd)
-    symmetrize!(ΔD_v)
 
-    L_P = LowerTriangular(cache.LP)
-    L_D = LowerTriangular(cache.LD)
-    U_v = cache.U
-    s_v = cache.s
+    L_P = LowerTriangular(LP)
 
-    # D⁻¹ = L_D⁻ᵀ L_D⁻¹
-    D_inv = L_D' \ inv(L_D)
+    X = L_P \ (Symmetric(ΔP_v, :L) * Symmetric(ΔD_v, :L) * L_P)
+    Y = (U' * X * U) ./ s'
+    M = (Y + Y') ./ (s .+ s')
 
-    # Inverse Lyapunov solve
-    X = L_P \ (ΔP_v * ΔD_v * L_P)
-    Y = (U_v' * X * U_v) ./ s_v'
-    B_mat = (Y + Y') ./ (s_v .+ s_v')
-    C = U_v * B_mat * U_v'
-    cross_sym = L_P * C * L_P'
+    M .*= -(s .* s')
+    for i in 1:d_v
+        M[i,i] += σμ - s[i]^2
+    end
 
-    # R_c = σμ D⁻¹ - P - cross_sym
-    R_c = σμ * D_inv - P_v - cross_sym
+    H_R_c = L_P' \ (U * M * U') / L_P
 
-    svec!(rc, R_c)
-    return rc
+    svec!(r, H_R_c)
+    return r
 end
 
-function max_step(cache::SDPCache{T},
-                  x::AbstractVector{T}, Δx::AbstractVector{T},
-                  primal::Bool, γ::Real) where {T}
-    d_v = size(cache.LP, 1)
+function corr!(
+        r::AbstractVector{T},
+        ::AbstractVector{T},
+        ::AbstractVector{T},
+        Δp::AbstractVector{T},
+        Δd::AbstractVector{T},
+        σμ::Real,
+        cache::SDPCache{T}
+    ) where {T}
+    sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
+end
 
-    # Use precomputed Cholesky factor from cache
-    L = LowerTriangular(primal ? cache.LP : cache.LD)
+function sdpmaxstep(
+        LP::AbstractMatrix{T},
+        LD::AbstractMatrix{T},
+        Δx::AbstractVector{T},
+        primal::Bool,
+        γ::Real
+    ) where {T}
+    d_v = size(LP, 1)
 
-    # Build ΔX from svec
+    if primal
+        L = LowerTriangular(LP)
+    else
+        L = LowerTriangular(LD)
+    end
+
     ΔX = zeros(T, d_v, d_v)
     smat!(ΔX, Δx)
-    symmetrize!(ΔX)
 
-    return step_length_block(L, ΔX, γ)
+    # M = L⁻¹ ΔX L⁻ᵀ
+    M = L \ Symmetric(ΔX, :L) / L'
+    M = (M + M') / 2
+
+    λ_min = eigmin(Symmetric(M, :L))
+
+    if λ_min < 0
+        return min(one(T), -γ / λ_min)
+    else
+        return one(T)
+    end
+end
+
+function maxstep(
+        ::AbstractVector{T},
+        Δx::AbstractVector{T},
+        primal::Bool,
+        γ::Real,
+        cache::SDPCache{T}
+    ) where {T}
+    sdpmaxstep(cache.LP, cache.LD, Δx, primal, γ)
 end

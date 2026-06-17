@@ -6,8 +6,8 @@
 
 struct SOC <: Cone end
 
-# View-based cache for SOC
-struct SOCCache{T}
+struct SOCCache{T} <: AbstractCache{SOC}
+    cone::SOC
     β::FScalarView{T}  # scaling factor (0-dim view)
     w::FVectorView{T}  # direction vector (satisfies w'Jw = 1)
 end
@@ -16,14 +16,14 @@ end
 degree(::SOC, n::Int) = 2
 
 # cache size: β(1) + w(n)
-cache_size(::SOC, n::Int) = 1 + n
+cachesize(::SOC, n::Int) = 1 + n
 
 # construct view-based cache from Caches
-function cache(c::Caches{T}, i::Int, ::SOC) where T
+function cache(c::Caches{T}, i::Int, cone::SOC) where T
     data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
     β = view(data, 1)
     w = view(data, 2:length(data))
-    SOCCache(β, w)
+    SOCCache(cone, β, w)
 end
 
 function identity!(x::AbstractVector{T}, ::SOC) where {T}
@@ -48,8 +48,8 @@ function socdet(x::AbstractVector{T}) where {T}
     return d
 end
 
-# SOC Jordan product: (x ∘ y)₀ = ⟨x,y⟩, (x ∘ y)ᵢ = x₀yᵢ + y₀xᵢ
-function jordan_prod!(out::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
+# SOC multiplication (Jordan product): out = x ∘ y
+function socmul!(out::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
     n = length(x)
 
     x1 = x[1]
@@ -64,9 +64,8 @@ function jordan_prod!(out::AbstractVector{T}, x::AbstractVector{T}, y::AbstractV
     return out
 end
 
-# In-place arrow inverse: solve L(z)b = b_old, i.e., b ← L(z)⁻¹b
-# L(z)e = z, so L(z)⁻¹z = e
-function arrow_inv!(z::AbstractVector{T}, b::AbstractVector{T}) where {T}
+# SOC division: b ← z \ b (solve L(z)b_new = b_old)
+function socdiv!(z::AbstractVector{T}, b::AbstractVector{T}) where {T}
     n = length(z)
     δ = socdet(z)
 
@@ -87,10 +86,8 @@ function arrow_inv!(z::AbstractVector{T}, b::AbstractVector{T}) where {T}
 end
 
 # In-place H½ or H⁻½ application: x ← H½x (flag=false) or x ← H⁻½x (flag=true)
-function apply_H_half!(x::AbstractVector{T}, cache::SOCCache{T}, flag::Bool) where {T}
+function socroot!(x::AbstractVector{T}, w::AbstractVector{T}, β::T, flag::Bool) where {T}
     n = length(x)
-    w = cache.w
-    β = cache.β[]
 
     if !flag
         σ = -one(T)
@@ -119,42 +116,37 @@ function apply_H_half!(x::AbstractVector{T}, cache::SOCCache{T}, flag::Bool) whe
     return x
 end
 
-function update_scaling!(cache::SOCCache{T}, ::SOC,
-                         p::AbstractVector{T}, d::AbstractVector{T}) where {T}
-    # β = (det(p) / det(d))^{1/4}
+function socscale!(
+        w::AbstractVector{T},
+        β::FScalarView{T},
+        p::AbstractVector{T},
+        d::AbstractVector{T}
+    ) where {T}
     det_p = socdet(p)
     det_d = socdet(d)
-    cache.β[] = (det_p / det_d)^(1/4)
+    β[] = (det_p / det_d)^(1/4)
 
-    # Normalized: s̃ = p/√det(p), z̃ = d/√det(d)
     sqrt_det_p = sqrt(det_p)
     sqrt_det_d = sqrt(det_d)
 
-    # w = (s̃ + J z̃) / √(2(1 + s̃·z̃))
-    # Note: s̃·z̃ is the ordinary Euclidean dot product, not the J-inner product
-    # This follows from: ‖s̃ + Jz̃‖_J² = det(s̃) + 2s̃ᵀz̃ + det(z̃) = 2(1 + s̃·z̃)
     n = length(p)
-    w = cache.w
-
-    # Compute s̃·z̃ (ordinary Euclidean dot product)
     s_dot_z = dot(p, d) / (sqrt_det_p * sqrt_det_d)
-
-    # w = (s̃ + J z̃) / √(2(1 + s̃·z̃))
-    scale = sqrt(2 * (1 + s_dot_z))
-    w[1] = (p[1] / sqrt_det_p + d[1] / sqrt_det_d) / scale
+    sc = sqrt(2 * (1 + s_dot_z))
+    w[1] = (p[1] / sqrt_det_p + d[1] / sqrt_det_d) / sc
     for i in 2:n
-        w[i] = (p[i] / sqrt_det_p - d[i] / sqrt_det_d) / scale
+        w[i] = (p[i] / sqrt_det_p - d[i] / sqrt_det_d) / sc
     end
 
     return
 end
 
-function hessian_block!(H::AbstractMatrix{T}, cache::SOCCache{T}, ::SOC) where {T}
-    n = length(cache.w)
-    w = cache.w
-    β = cache.β[]
-    η = inv(β^2)
+function scale!(p::AbstractVector{T}, d::AbstractVector{T}, cache::SOCCache{T}) where {T}
+    socscale!(cache.w, cache.β, p, d)
+end
 
+function sochess!(H::AbstractMatrix{T}, w::AbstractVector{T}, β::T) where {T}
+    n = length(w)
+    η = inv(β^2)
     w1 = w[1]
 
     H[1, 1] = 2η * w1^2 - η
@@ -165,9 +157,7 @@ function hessian_block!(H::AbstractMatrix{T}, cache::SOCCache{T}, ::SOC) where {
 
     for j in 2:n
         wj = w[j]
-
         H[j, j] = 2η * wj^2 + η
-
         for i in j + 1:n
             H[i, j] = 2η * w[i] * wj
         end
@@ -176,48 +166,63 @@ function hessian_block!(H::AbstractMatrix{T}, cache::SOCCache{T}, ::SOC) where {
     return H
 end
 
-function corrector_term!(rc::AbstractVector{T}, cache::SOCCache{T}, ::SOC,
-                         p::AbstractVector{T}, d::AbstractVector{T},
-                         Δp::AbstractVector{T}, Δd::AbstractVector{T},
-                         σμ::Real) where {T}
-    # Full SOC corrector: r_c = σμ·z⁻¹ - s - H⁻½ L(λ)⁻¹(d_s ∘ d_z)
-    # where λ = H½ s, d_s = H½ Δs, d_z = H⁻½ Δz
-    # Note: Δp, Δd are overwritten (not needed after this function returns)
-    n = length(p)
-
-    # Transform Δp, Δd in-place to d_s, d_z
-    apply_H_half!(Δp, cache, false)  # Δp ← H½ Δp = d_s
-    apply_H_half!(Δd, cache, true)   # Δd ← H⁻½ Δd = d_z
-
-    # rc = d_s ∘ d_z (Jordan product)
-    jordan_prod!(rc, Δp, Δd)
-
-    # Reuse Δp for λ = H½ p (zero allocations)
-    copyto!(Δp, p)
-    apply_H_half!(Δp, cache, false)
-
-    # rc ← L(λ)⁻¹ rc (in-place arrow inverse)
-    arrow_inv!(Δp, rc)
-
-    # rc ← H⁻½ rc (in-place)
-    apply_H_half!(rc, cache, true)
-
-    # r_c = σμ·d⁻¹ - p - rc
-    # d⁻¹ = Jd / det(d)
-    ddet = socdet(d)
-
-    rc[1] = σμ * d[1] / ddet - p[1] - rc[1]
-
-    for i in 2:n
-        rc[i] = -σμ * d[i] / ddet - p[i] - rc[i]
-    end
-
-    return rc
+function hess!(
+        H::AbstractMatrix{T},
+        ::AbstractVector{T},
+        ::AbstractVector{T},
+        cache::SOCCache{T}
+    ) where {T}
+    sochess!(H, cache.w, cache.β[])
 end
 
-function max_step(cache::SOCCache{T},
-                  x::AbstractVector{T}, Δx::AbstractVector{T},
-                  primal::Bool, γ::Real) where {T}
+function soccorr!(
+        r::AbstractVector{T},
+        w::AbstractVector{T},
+        β::T,
+        p::AbstractVector{T},
+        Δp::AbstractVector{T},
+        Δd::AbstractVector{T},
+        σμ::Real
+    ) where {T}
+    n = length(p)
+
+    socroot!(Δp, w, β, false)
+    socroot!(Δd, w, β, true)
+
+    socmul!(r, Δp, Δd)
+
+    copyto!(Δp, p)
+    socroot!(Δp, w, β, false)
+
+    socdiv!(Δp, r)
+
+    axpy!(one(T), Δp, r)
+    socroot!(r, w, β, false)
+
+    pdet = socdet(p)
+
+    r[1] = σμ * p[1] / pdet - r[1]
+
+    for i in 2:n
+        r[i] = -σμ * p[i] / pdet - r[i]
+    end
+
+    return r
+end
+
+function corr!(
+        r::AbstractVector{T},
+        p::AbstractVector{T},
+        ::AbstractVector{T},
+        Δp::AbstractVector{T},
+        Δd::AbstractVector{T},
+        σμ::Real,
+        cache::SOCCache{T}
+    ) where {T}
+    soccorr!(r, cache.w, cache.β[], p, Δp, Δd, σμ)
+end
+
+function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
     n = length(x)
 
     # compute scalars
@@ -272,11 +277,7 @@ function max_step(cache::SOCCache{T},
             s = sqrt(max(d, zero(T)))
             q = -(b + copysign(s, b)) / 2
 
-            if b ≥ 0
-                τ1 = q / a
-            else
-                τ1 = c / q
-            end
+            τ1 = b ≥ 0 ? q / a : c / q
 
             if τ1 > 0
                 τ = min(τ, γ * τ1)
@@ -295,4 +296,14 @@ function max_step(cache::SOCCache{T},
     end
 
     return τ
+end
+
+function maxstep(
+        x::AbstractVector{T},
+        Δx::AbstractVector{T},
+        ::Bool,
+        γ::Real,
+        ::SOCCache{T}
+    ) where {T}
+    socmaxstep(x, Δx, γ)
 end

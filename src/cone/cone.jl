@@ -3,6 +3,7 @@
 #
 
 abstract type Cone end
+abstract type AbstractCache{C<:Cone} end
 
 using Base: ReshapedArray
 using FixedSizeArrays: FixedSizeArrayDefault
@@ -30,41 +31,40 @@ Set x to the identity element of the cone.
 function identity! end
 
 """
-    update_scaling!(cache, cone::Cone, p::AbstractVector, d::AbstractVector)
+    scale!(p, d, cache)
 
 Compute and cache the NT scaling from primal p and dual d.
 """
-function update_scaling! end
+function scale! end
 
 """
-    hessian_block!(H::AbstractMatrix, cache, cone::Cone)
+    hess!(H, p, d, cache)
 
 Compute the Hessian block W⁻¹ ⊗ₛ W⁻¹ (or its analogue) into H.
+SDP/SOC use the cache; POS computes directly from p, d.
 """
-function hessian_block! end
+function hess! end
 
 """
-    corrector_term!(rc::AbstractVector, cache, cone::Cone,
-                    p::AbstractVector, d::AbstractVector,
-                    Δp::AbstractVector, Δd::AbstractVector, σμ::Real)
+    corr!(r, p, d, Δp, Δd, σμ, cache)
 
-Compute the second-order corrector contribution in original coordinates.
+Compute the H-applied corrector term directly.
 """
-function corrector_term! end
+function corr! end
 
 """
-    max_step(cache, x::AbstractVector, Δx::AbstractVector, primal::Bool, γ::Real) -> Real
+    maxstep(x, Δx, primal, γ, cache) -> Real
 
 Compute the maximum step τ ∈ (0,1] such that x + τΔx stays in the cone interior.
 """
-function max_step end
+function maxstep end
 
 """
-    cache_size(cone::Cone, n::Int) -> Int
+    cachesize(cone::Cone, n::Int) -> Int
 
 Return the number of T values needed in the cache for this cone with embdim n.
 """
-function cache_size end
+function cachesize end
 
 # View types for cache structs
 const FScalarView{T} = SubArray{T, 0, FVector{T}, Tuple{Int64}, true}

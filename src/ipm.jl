@@ -20,6 +20,40 @@ function Iterate{T}(n::Integer, m::Integer) where {T}
 end
 
 #
+# solver parameters
+#
+@kwdef struct Parameters{T}
+    step_frac::T = 0.99                     # step size damping
+    feas_tol::T = 1e-8                # feasibility tolerance
+    gap_tol::T = 1e-8                   # duality gap tolerance
+    itmax::Int = 100             # max IPM iterations
+    kkt_frac::T = 1.0                  # augmentation parameter
+    kkt_atol::T = √eps(T)           # KKT solver absolute tolerance
+    kkt_rtol::T = √eps(T)           # KKT solver relative tolerance
+    kkt_itmax::Int = 1000           # KKT solver max iterations
+    verbose::Bool = false           # verbosity flag
+    stall_window::Int = 5           # stall detection window
+    stall_threshold::T = 0.99       # stall detection threshold
+    τ_collapse_threshold::T = 1e-6  # step collapse threshold
+end
+
+#
+# solver workspaces
+#
+struct Workspace{T}
+    facwrk::FactorizationWorkspace{T}
+    divwrk::DivisionWorkspace{T}
+    itrwrk::IterationWorkspace{T}
+end
+
+function Workspace(F::ChordalCholesky{UPLO, T}, m::Integer) where {UPLO, T}
+    facwrk = FactorizationWorkspace(F)
+    divwrk = DivisionWorkspace(F, 1)
+    itrwrk = CgWorkspace(m, m, Vector{T})
+    Workspace{T}(facwrk, divwrk, itrwrk)
+end
+
+#
 # cone degree ν = Σ degree(cone_v, n_v)
 #
 function conedegree(cones::Vector{<:Cone}, B::BlockSparseMatrix)
@@ -76,7 +110,7 @@ function allocate_caches(::Type{T}, ::Type{I}, cones::Vector{<:Cone}, B::BlockSp
     xblk[1] = 1
     for (i, (cone, v)) in enumerate(zip(cones, vtxs(B)))
         n_v = ncols(B, v)
-        xblk[i + 1] = xblk[i] + cache_size(cone, n_v)
+        xblk[i + 1] = xblk[i] + cachesize(cone, n_v)
     end
 
     # Allocate val
@@ -106,11 +140,14 @@ function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
         H_v = block(H, v, v, v)
         c = cache(caches, i, cone)
 
+        p_v = view(p, r)
+        d_v = view(d, r)
+
         # Update scaling cache
-        update_scaling!(c, cone, view(p, r), view(d, r))
+        scale!(p_v, d_v, c)
 
         # Compute Hessian block
-        hessian_block!(H_v, c, cone)
+        hess!(H_v, p_v, d_v, c)
     end
 end
 
@@ -122,7 +159,7 @@ end
 #        B Δp    = r_p
 #
 # solve_kkt! solves [A Bᵀ; B 0][x; y] = [f; g]
-# so we set: A = H, x = Δp, y = -Δy, f = H r_c - r_d, g = r_p
+# so we set: A = H, x = Δp, y = -Δy, f = (provided), g = r_p
 #
 # After solving, recover Δy = -y and Δd = r_d - Bᵀ Δy
 #
@@ -135,8 +172,7 @@ function newton_step!(
     r::AbstractVector{T},
     F::ChordalCholesky{UPLO, T},
     B::BlockSparseMatrix{T},
-    H::BlockSparseMatrix{T},
-    r_c::AbstractVector{T},
+    f::AbstractVector{T},
     r_p::AbstractVector{T},
     r_d::AbstractVector{T};
     α::Real=1.0,
@@ -144,12 +180,6 @@ function newton_step!(
     rtol::Real=√eps(T),
     itmax::Integer=1000
 ) where {UPLO, T}
-    n = length(Δp)
-    m = length(Δy)
-
-    # f = H r_c - r_d
-    f = Symmetric(H, UPLO) * r_c - r_d
-
     # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
     # assumes F is already factored
     solve_kkt!(divwrk, itrwrk, Δp, Δy, r, F, B, f, r_p; α, atol, rtol, itmax)
@@ -167,16 +197,6 @@ end
 #
 # affine RHS: r_c = -p
 #
-# For the affine (predictor) step with σ = 0:
-#   R_c = -P  →  r_c = -p
-#   f = H r_c - r_d = H(-p) - r_d = -d - r_d
-#
-function affine_rhs!(r_c::AbstractVector{T}, p::AbstractVector{T}) where {T}
-    copyto!(r_c, p)
-    lmul!(-one(T), r_c)
-    return r_c
-end
-
 #
 # corrector RHS using cone interface
 #
@@ -187,8 +207,8 @@ function corrector_rhs!(r_c::AbstractVector{T}, caches::Caches{T},
     for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
         r = colrange(B, v)
         c = cache(caches, i, cone)
-        corrector_term!(view(r_c, r), c, cone, view(p, r), view(d, r),
-                        view(Δp, r), view(Δd, r), σμ)
+        corr!(view(r_c, r), view(p, r), view(d, r),
+              view(Δp, r), view(Δd, r), σμ, c)
     end
     return r_c
 end
@@ -199,7 +219,7 @@ end
 function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T},
                           Δp::AbstractVector{T}, Δd::AbstractVector{T},
                           caches::Caches{T}, cones::Vector{<:Cone},
-                          B::BlockSparseMatrix{T}; γ::Real=0.99) where {T}
+                          B::BlockSparseMatrix{T}; step_frac::Real=0.99) where {T}
     τ_p = one(T)
     τ_d = one(T)
 
@@ -208,8 +228,8 @@ function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T},
         c = cache(caches, i, cone)
 
         # Step lengths for this block
-        τ_p_v = max_step(c, view(p, r), view(Δp, r), true, γ)
-        τ_d_v = max_step(c, view(d, r), view(Δd, r), false, γ)
+        τ_p_v = maxstep(view(p, r), view(Δp, r), true, step_frac, c)
+        τ_d_v = maxstep(view(d, r), view(Δd, r), false, step_frac, c)
 
         τ_p = min(τ_p, τ_p_v)
         τ_d = min(τ_d, τ_d_v)
@@ -303,7 +323,7 @@ struct SolverResult{T}
     τ_d_history::Vector{T}
     rp_history::Vector{T}
     rd_history::Vector{T}
-    status::Symbol  # :optimal, :max_iter, :stalled, :infeasible, :numerical_failure
+    status::Symbol  # :optimal, :itmax, :stalled, :infeasible, :numerical_failure
 end
 
 #
@@ -369,14 +389,14 @@ function solve!(
     F::ChordalCholesky{UPLO, T},
     L::ChordalTriangular{:N, UPLO, T};
     cones::Vector{<:Cone}=[SDP() for _ in vtxs(B)],
-    γ::Real=0.99,
-    ε_feas::Real=1e-8,
-    ε_μ::Real=1e-8,
-    max_iter::Integer=100,
-    τ_aug::Real=1.0,
-    atol::Real=√eps(T),
-    rtol::Real=√eps(T),
-    itmax::Integer=1000,
+    step_frac::Real=0.99,
+    feas_tol::Real=1e-8,
+    gap_tol::Real=1e-8,
+    itmax::Integer=100,
+    kkt_frac::Real=1.0,
+    kkt_atol::Real=√eps(T),
+    kkt_rtol::Real=√eps(T),
+    kkt_itmax::Integer=1000,
     verbose::Bool=false,
     stall_window::Int=5,
     stall_threshold::Real=0.99,
@@ -387,15 +407,15 @@ function solve!(
     m = length(y)
     ν = conedegree(cones, B)
 
-    # Workspaces
-    facwrk = FactorizationWorkspace(F)
-    divwrk = DivisionWorkspace(F, 1)
-    itrwrk = CgWorkspace(m, m, Vector{T})
+    params = Parameters{T}(; step_frac, feas_tol, gap_tol, itmax, kkt_frac, kkt_atol, kkt_rtol, kkt_itmax,
+                           verbose, stall_window, stall_threshold, τ_collapse_threshold)
+    workspace = Workspace(F, m)
     r = zeros(T, m)
 
     r_p = zeros(T, m)
     r_d = zeros(T, n)
     r_c = zeros(T, n)
+    f = zeros(T, n)
 
     # Direction vectors
     Δp_aff = zeros(T, n)
@@ -415,10 +435,10 @@ function solve!(
     rp_history = T[]
     rd_history = T[]
 
-    status = :max_iter
+    status = :itmax
     norm_B_sq = norm(B)^2
 
-    for iter in 1:max_iter
+    for iter in 1:params.itmax
         # Compute residuals and μ
         residuals!(r_p, r_d, B, p, d, y, c, g)
         μ_curr = mu(p, d, ν)
@@ -430,12 +450,12 @@ function solve!(
         push!(rp_history, norm_rp)
         push!(rd_history, norm_rd)
 
-        if verbose
+        if params.verbose
             println("Iter $iter: μ = $μ_curr, ||r_p|| = $norm_rp, ||r_d|| = $norm_rd")
         end
 
         # Check convergence
-        if norm_rp < ε_feas && norm_rd < ε_feas && μ_curr < ε_μ
+        if norm_rp < params.feas_tol && norm_rd < params.feas_tol && μ_curr < params.gap_tol
             status = :optimal
             return SolverResult{T}(
                 copy(p), copy(d), copy(y), true, iter,
@@ -445,9 +465,9 @@ function solve!(
         end
 
         # Check for stalling
-        if is_stalled(μ_history; window=stall_window, threshold=stall_threshold)
+        if is_stalled(μ_history; window=params.stall_window, threshold=params.stall_threshold)
             status = :stalled
-            if verbose
+            if params.verbose
                 println("Warning: μ stalling detected")
             end
         end
@@ -455,19 +475,20 @@ function solve!(
         # Assemble H (NT scaling + Hessian) via cone-dispatched interface
         hess!(H, caches, cones, p, d, B)
 
-        # Scale α so that τ_aug=1 is a reasonable default
-        α = τ_aug * norm(Symmetric(H, UPLO)) / norm_B_sq
+        # Scale α so that kkt_frac=1 is a reasonable default
+        α = params.kkt_frac * norm(Symmetric(H, :L)) / norm_B_sq
 
         # Factor F = H + α B'B once per iteration
-        factor_kkt!(facwrk, F, L, H; α)
+        factor_kkt!(workspace.facwrk, F, L, H; α)
 
         # ===== Predictor (affine) step =====
-        affine_rhs!(r_c, p)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, divwrk, itrwrk, r, F, B, H,
-                     r_c, r_p, r_d; α, atol, rtol, itmax)
+        # f = H·(-p) - r_d = -d - r_d (by NT property: H·p = d)
+        @. f = -(d + r_d)
+        newton_step!(Δp_aff, Δy_aff, Δd_aff, workspace.divwrk, workspace.itrwrk, r, F, B,
+                     f, r_p, r_d; α, atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
 
         # Step to boundary for affine direction
-        τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; γ=one(T))
+        τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; step_frac=one(T))
 
         # Compute μ_aff
         p_aff = p + τ_p_aff * Δp_aff
@@ -478,20 +499,22 @@ function solve!(
         σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
 
         # ===== Corrector step (reuses same factorization) =====
-        corrector_rhs!(r_c, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
-        newton_step!(Δp, Δy, Δd, divwrk, itrwrk, r, F, B, H,
-                     r_c, r_p, r_d; α, atol, rtol, itmax)
+        # corrector_rhs! now returns H·r_c directly per block
+        corrector_rhs!(f, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
+        axpy!(-1, r_d, f)
+        newton_step!(Δp, Δy, Δd, workspace.divwrk, workspace.itrwrk, r, F, B,
+                     f, r_p, r_d; α, atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
 
         # Step to boundary
-        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; γ)
+        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; step_frac=params.step_frac)
         push!(τ_p_history, τ_p)
         push!(τ_d_history, τ_d)
 
         # Check for numerical failure
         if is_numerical_failure(τ_p_history, τ_d_history, rp_history, rd_history;
-                                 τ_threshold=τ_collapse_threshold)
+                                 τ_threshold=params.τ_collapse_threshold)
             status = :numerical_failure
-            if verbose
+            if params.verbose
                 println("Warning: numerical failure detected (τ collapse + residual plateau)")
             end
         end
@@ -503,7 +526,7 @@ function solve!(
     end
 
     return SolverResult{T}(
-        copy(p), copy(d), copy(y), false, max_iter,
+        copy(p), copy(d), copy(y), false, params.itmax,
         μ_history, τ_p_history, τ_d_history, rp_history, rd_history,
         status
     )

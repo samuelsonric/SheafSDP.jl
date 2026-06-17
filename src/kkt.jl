@@ -44,12 +44,12 @@ end
 #
 # and factorize it
 function factor_kkt!(
-    facwrk::FactorizationWorkspace{T},
-    F::ChordalCholesky{UPLO, T},
-    L::ChordalTriangular{:N, UPLO, T},
-    A::BlockSparseMatrix{T};
-    α::Real=1.0
-) where {UPLO, T}
+        facwrk::FactorizationWorkspace{T},
+        F::ChordalCholesky{UPLO, T},
+        L::ChordalTriangular{:N, UPLO, T},
+        A::BlockSparseMatrix{T};
+        α::Real=1.0
+    ) where {UPLO, T}
     n = size(F, 1)
     @assert size(L, 1) == n
 
@@ -66,20 +66,20 @@ end
 #   [ B 0  ] [ y ]   [ g ]
 #
 function solve_kkt!(
-    divwrk::DivisionWorkspace{T},
-    itrwrk::IterationWorkspace{T},
-    x::AbstractVector{T},
-    y::AbstractVector{T},
-    r::AbstractVector{T},
-    F::ChordalCholesky{UPLO, T},
-    B::BlockSparseMatrix{T},
-    f::AbstractVector{T},
-    g::AbstractVector{T};
-    α::Real=1.0,
-    atol::Real=√eps(T),
-    rtol::Real=√eps(T),
-    itmax::Integer=1000
-) where {UPLO, T}
+        divwrk::DivisionWorkspace{T},
+        itrwrk::IterationWorkspace{T},
+        x::AbstractVector{T},
+        y::AbstractVector{T},
+        r::AbstractVector{T},
+        F::ChordalCholesky{UPLO, T},
+        B::BlockSparseMatrix{T},
+        f::AbstractVector{T},
+        g::AbstractVector{T};
+        α::Real=1.0,
+        atol::Real=√eps(T),
+        rtol::Real=√eps(T),
+        itmax::Integer=1000
+    ) where {UPLO, T}
     m, n = size(B)
 
     @assert length(x) == n
