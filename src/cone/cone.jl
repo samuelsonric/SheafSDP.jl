@@ -53,8 +53,7 @@ Compute the second-order corrector contribution in original coordinates.
 function corrector_term! end
 
 """
-    max_step(cache, cone::Cone, x::AbstractVector, Δx::AbstractVector,
-             primal::Bool, γ::Real) -> Real
+    max_step(cache, x::AbstractVector, Δx::AbstractVector, primal::Bool, γ::Real) -> Real
 
 Compute the maximum step τ ∈ (0,1] such that x + τΔx stays in the cone interior.
 """

@@ -208,8 +208,8 @@ function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T},
         c = cache(caches, i, cone)
 
         # Step lengths for this block
-        τ_p_v = max_step(c, cone, view(p, r), view(Δp, r), true, γ)
-        τ_d_v = max_step(c, cone, view(d, r), view(Δd, r), false, γ)
+        τ_p_v = max_step(c, view(p, r), view(Δp, r), true, γ)
+        τ_d_v = max_step(c, view(d, r), view(Δd, r), false, γ)
 
         τ_p = min(τ_p, τ_p_v)
         τ_d = min(τ_d, τ_d_v)

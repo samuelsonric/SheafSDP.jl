@@ -9,8 +9,7 @@ struct SDPCache{T}
     LP::FMatrixView{T}    # lower triangular Cholesky factor of P (d×d)
     LD::FMatrixView{T}    # lower triangular Cholesky factor of D (d×d)
     U::FMatrixView{T}     # orthogonal matrix from SVD (d×d)
-    sv::FVectorView{T}    # singular values (d)
-    work::FMatrixView{T}  # workspace (d×d)
+    s::FVectorView{T}    # singular values (d)
 end
 
 #
@@ -145,12 +144,12 @@ end
 # compute H_v = W⁻¹ ⊗ₛ W⁻¹
 # W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹ where W = R R' with R = L_P U Σ^{-1/2}
 function hessblock!(H::AbstractMatrix{T}, LP::AbstractMatrix{T}, U::AbstractMatrix{T},
-                    s::AbstractVector{T}, work::AbstractMatrix{T}) where {T}
+                    s::AbstractVector{T}) where {T}
     L_P = LowerTriangular(LP)
 
     # W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
-    mul!(work, U * Diagonal(s), U')      # work = U Σ U'
-    Winv = L_P' \ work / L_P             # W⁻¹ = L_P⁻ᵀ work L_P⁻¹
+    UΣUt = U * Diagonal(s) * U'
+    Winv = L_P' \ UΣUt / L_P
 
     return skron!(H, Winv)
 end
@@ -188,10 +187,10 @@ end
 # degree = triroot(n) where n = d(d+1)/2
 degree(::SDP, n::Int) = triroot(n)
 
-# cache size: LP(d²) + LD(d²) + U(d²) + sv(d) + work(d²) = 4d² + d
+# cache size: LP(d²) + LD(d²) + U(d²) + s(d) = 3d² + d
 function cache_size(::SDP, n::Int)
     d = triroot(n)
-    return 4 * d^2 + d
+    return 3 * d^2 + d
 end
 
 # construct view-based cache from Caches
@@ -200,15 +199,14 @@ function cache(c::Caches{T}, i::Int, ::SDP) where T
     d = triroot(n)
     data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
 
-    # Layout: LP(d²), LD(d²), U(d²), sv(d), work(d²)
+    # Layout: LP(d²), LD(d²), U(d²), s(d)
     d2 = d^2
-    LP   = reshape(view(data, 1:d2), d, d)
-    LD   = reshape(view(data, d2+1:2d2), d, d)
-    U    = reshape(view(data, 2d2+1:3d2), d, d)
-    sv   = view(data, 3d2+1:3d2+d)
-    work = reshape(view(data, 3d2+d+1:4d2+d), d, d)
+    LP = reshape(view(data, 1:d2), d, d)
+    LD = reshape(view(data, d2+1:2d2), d, d)
+    U  = reshape(view(data, 2d2+1:3d2), d, d)
+    s  = view(data, 3d2+1:3d2+d)
 
-    SDPCache(LP, LD, U, sv, work)
+    SDPCache(LP, LD, U, s)
 end
 
 function identity!(x::AbstractVector{T}, ::SDP) where {T}
@@ -231,12 +229,12 @@ function update_scaling!(cache::SDPCache{T}, ::SDP,
     symmetrize!(D)
 
     # Compute scaling factors via meanblock!
-    meanblock!(cache.LP, cache.LD, cache.U, cache.sv, P, D)
+    meanblock!(cache.LP, cache.LD, cache.U, cache.s, P, D)
     return
 end
 
 function hessian_block!(H::AbstractMatrix, cache::SDPCache, ::SDP)
-    hessblock!(H, cache.LP, cache.U, cache.sv, cache.work)
+    hessblock!(H, cache.LP, cache.U, cache.s)
     return H
 end
 
@@ -261,15 +259,15 @@ function corrector_term!(rc::AbstractVector, cache::SDPCache{T}, ::SDP,
     L_P = LowerTriangular(cache.LP)
     L_D = LowerTriangular(cache.LD)
     U_v = cache.U
-    s_v = cache.sv
+    s_v = cache.s
 
     # D⁻¹ = L_D⁻ᵀ L_D⁻¹
     D_inv = L_D' \ inv(L_D)
 
     # Inverse Lyapunov solve
     X = L_P \ (ΔP_v * ΔD_v * L_P)
-    Y = U_v' * X * U_v
-    B_mat = (Y ./ s_v' + Y' ./ s_v) ./ (s_v .+ s_v')
+    Y = (U_v' * X * U_v) ./ s_v'
+    B_mat = (Y + Y') ./ (s_v .+ s_v')
     C = U_v * B_mat * U_v'
     cross_sym = L_P * C * L_P'
 
@@ -280,7 +278,7 @@ function corrector_term!(rc::AbstractVector, cache::SDPCache{T}, ::SDP,
     return rc
 end
 
-function max_step(cache::SDPCache{T}, ::SDP,
+function max_step(cache::SDPCache{T},
                   x::AbstractVector{T}, Δx::AbstractVector{T},
                   primal::Bool, γ::Real) where {T}
     d_v = size(cache.LP, 1)

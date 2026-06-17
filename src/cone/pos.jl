@@ -57,7 +57,7 @@ function corrector_term!(rc::AbstractVector{T}, cache::POSCache{T}, ::POS,
     return rc
 end
 
-function max_step(cache::POSCache{T}, ::POS, x::AbstractVector{T}, Δx::AbstractVector{T}, primal::Bool, γ::Real) where {T}
+function max_step(cache::POSCache{T}, x::AbstractVector{T}, Δx::AbstractVector{T}, primal::Bool, γ::Real) where {T}
     #                                                                                                                                                                                                                                                                        
     # compute                                                                                                                                                                                                                                                                
     #                                                                                                                                                                                                                                                                        
