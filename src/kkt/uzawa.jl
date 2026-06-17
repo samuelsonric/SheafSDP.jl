@@ -16,7 +16,8 @@ struct UzawaWorkspace{
     r::Vector{T}
 end
 
-function UzawaWorkspace(F::ChordalCholesky{UPLO, T, I}, L::ChordalTriangular{:N, UPLO, T, I}, m::Integer) where {UPLO, T, I <: Integer}
+function UzawaWorkspace(F::ChordalCholesky{UPLO, T, I}, L::ChordalTriangular{:N, UPLO, T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
+    m = size(B, 1)
     facwrk = FactorizationWorkspace(F)
     divwrk = DivisionWorkspace(F, 1)
     itrwrk = CgWorkspace(m, m, Vector{T})
@@ -101,7 +102,7 @@ function solve_kkt!(
     rtol::Real=√eps(T),
     itmax::Integer=1000
 ) where {UPLO, T}
-    solve_kkt!(kktwrk.divwrk, kktwrk.itrwrk, x, y, kktwrk.r, kktwrk.F, B, f, g; α, atol, rtol, itmax)
+    solve_uzw!(kktwrk.divwrk, kktwrk.itrwrk, x, y, kktwrk.r, kktwrk.F, B, f, g; α, atol, rtol, itmax)
 end
 
 #
@@ -110,7 +111,7 @@ end
 #   [ A Bᵀ ] [ x ] = [ f ]
 #   [ B 0  ] [ y ]   [ g ]
 #
-function solve_kkt!(
+function solve_uzw!(
         divwrk::DivisionWorkspace{T},
         itrwrk::IterationWorkspace{T},
         x::AbstractVector{T},

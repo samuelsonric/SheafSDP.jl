@@ -385,7 +385,7 @@ function solve!(
 
     params = Parameters{T}(; step_frac, feas_tol, gap_tol, itmax, kkt_frac, kkt_atol, kkt_rtol, kkt_itmax,
                            verbose, stall_window, stall_threshold, τ_collapse_threshold)
-    kkt = UzawaWorkspace(F, L, m)
+    kkt = UzawaWorkspace(F, L, B)
 
     r_p = zeros(T, m)
     r_d = zeros(T, n)
