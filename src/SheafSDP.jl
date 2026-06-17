@@ -12,14 +12,12 @@ using BlockSparseArrays: BlockSparseMatrix, block, colrange, nvtxs, vtxs, ncols,
 using Base: oneto
 
 include("it.jl")
-include("math.jl")
 include("cone/cone.jl")
 include("sheaf.jl")
 include("kkt.jl")
 include("ipm.jl")
 
-export sheaf, solve_kkt!, factor_kkt!, solve_kkt_factored!
-export RiWorkspace, IterationWorkspace
+export sheaf, solve_kkt!, factor_kkt!
 export solve!, initialize!, SolverResult
 export Cone, SDP, POS, SOC
 

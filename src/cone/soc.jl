@@ -26,10 +26,10 @@ function cache(c::Caches{T}, i::Int, ::SOC) where T
     SOCCache(β, w)
 end
 
-function identity!(x::AbstractVector{T}, ::SOC, ξ::Real, uplo::Val) where {T}
+function identity!(x::AbstractVector{T}, ::SOC) where {T}
     # e = (1, 0, ..., 0)
     fill!(x, zero(T))
-    x[1] = T(ξ)
+    x[1] = one(T)
     return x
 end
 
@@ -143,7 +143,7 @@ function apply_H_half!(out::AbstractVector{T}, cache::SOCCache{T}, x::AbstractVe
 end
 
 function update_scaling!(cache::SOCCache{T}, ::SOC,
-                         p::AbstractVector{T}, d::AbstractVector{T}, uplo::Val) where {T}
+                         p::AbstractVector{T}, d::AbstractVector{T}) where {T}
     # β = (det(p) / det(d))^{1/4}
     det_p = det_soc(p)
     det_d = det_soc(d)
@@ -172,45 +172,27 @@ function update_scaling!(cache::SOCCache{T}, ::SOC,
     return
 end
 
-function hessian_block!(H::AbstractMatrix{T}, cache::SOCCache{T}, ::SOC, uplo::Val{UPLO}) where {UPLO, T}
+function hessian_block!(H::AbstractMatrix{T}, cache::SOCCache{T}, ::SOC) where {T}
     n = length(cache.w)
     w = cache.w
     β = cache.β[]
     η = inv(β^2)
 
-    fill!(H, zero(T))
+    w1 = w[1]
 
-    for j in 1:n
-        if isone(j)
-            αj =  one(T)
-        else
-            αj = -one(T)
-        end
+    H[1, 1] = 2η * w1^2 - η
 
-        ηαjwj = 2η * αj * w[j]
+    for i in 2:n
+        H[i, 1] = -2η * w[i] * w1
+    end
 
-        if UPLO === :L
-            r = j:n
-        else
-            r = 1:j
-        end
+    for j in 2:n
+        wj = w[j]
 
-        if UPLO === :L
-            H[j, j] -= αj * η
-        end
+        H[j, j] = 2η * wj^2 + η
 
-        for i in r
-            if isone(i)
-                αi =  one(T)
-            else
-                αi = -one(T)
-            end
-
-            H[i, j] += αi * w[i] * ηαjwj
-        end
-
-        if UPLO === :U
-            H[j, j] -= αj * η
+        for i in j + 1:n
+            H[i, j] = 2η * w[i] * wj
         end
     end
 
@@ -220,7 +202,7 @@ end
 function corrector_term!(rc::AbstractVector{T}, cache::SOCCache{T}, ::SOC,
                          p::AbstractVector{T}, d::AbstractVector{T},
                          Δp::AbstractVector{T}, Δd::AbstractVector{T},
-                         σμ::Real, uplo::Val) where {T}
+                         σμ::Real) where {T}
     # Full SOC corrector: r_c = σμ·z⁻¹ - s - H⁻½ L(λ)⁻¹(d_s ∘ d_z)
     # where λ = H½ s, d_s = H½ Δs, d_z = H⁻½ Δz
     n = length(p)
@@ -262,7 +244,7 @@ end
 
 function max_step(cache::SOCCache{T}, ::SOC,
                   x::AbstractVector{T}, Δx::AbstractVector{T},
-                  primal::Bool, γ::Real, uplo::Val) where {T}
+                  primal::Bool, γ::Real) where {T}
     # det(x + τΔx) = aτ² + bτ + c where
     # a = jdot(Δx, Δx) = det(Δx)
     # b = 2·jdot(x, Δx)

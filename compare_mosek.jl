@@ -6,7 +6,7 @@ using JuMP
 import MathOptInterface as MOI
 using MosekTools
 using AppleAccelerate
-using SheafSDP: trinum, triroot, svec!, smat!, symmetrize!
+using SheafSDP: triroot, svec!, smat!, symmetrize!
 using BlockSparseArrays: vtxs, colrange, ncols
 
 Random.seed!(42)
@@ -46,8 +46,8 @@ p0, d0 = zeros(n), zeros(n)
 for v in vtxs(B)
     r = colrange(B, v)
     d_v = triroot(ncols(B, v))
-    A = randn(d_v, d_v); svec!(view(p0, r), A*A'+I, Val(:L))
-    A = randn(d_v, d_v); svec!(view(d0, r), A*A'+I, Val(:L))
+    A = randn(d_v, d_v); svec!(view(p0, r), A*A'+I)
+    A = randn(d_v, d_v); svec!(view(d0, r), A*A'+I)
 end
 
 y0 = randn(m)

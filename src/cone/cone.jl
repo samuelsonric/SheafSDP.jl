@@ -23,21 +23,21 @@ Return the rank of the cone given embedding dimension n.
 function degree end
 
 """
-    identity!(x::AbstractVector, cone::Cone, ξ::Real, uplo::Val)
+    identity!(x::AbstractVector, cone::Cone)
 
-Set x to ξ times the identity element of the cone.
+Set x to the identity element of the cone.
 """
 function identity! end
 
 """
-    update_scaling!(cache, cone::Cone, p::AbstractVector, d::AbstractVector, uplo::Val)
+    update_scaling!(cache, cone::Cone, p::AbstractVector, d::AbstractVector)
 
 Compute and cache the NT scaling from primal p and dual d.
 """
 function update_scaling! end
 
 """
-    hessian_block!(H::AbstractMatrix, cache, cone::Cone, uplo::Val)
+    hessian_block!(H::AbstractMatrix, cache, cone::Cone)
 
 Compute the Hessian block W⁻¹ ⊗ₛ W⁻¹ (or its analogue) into H.
 """
@@ -46,7 +46,7 @@ function hessian_block! end
 """
     corrector_term!(rc::AbstractVector, cache, cone::Cone,
                     p::AbstractVector, d::AbstractVector,
-                    Δp::AbstractVector, Δd::AbstractVector, σμ::Real, uplo::Val)
+                    Δp::AbstractVector, Δd::AbstractVector, σμ::Real)
 
 Compute the second-order corrector contribution in original coordinates.
 """
@@ -54,7 +54,7 @@ function corrector_term! end
 
 """
     max_step(cache, cone::Cone, x::AbstractVector, Δx::AbstractVector,
-             primal::Bool, γ::Real, uplo::Val) -> Real
+             primal::Bool, γ::Real) -> Real
 
 Compute the maximum step τ ∈ (0,1] such that x + τΔx stays in the cone interior.
 """

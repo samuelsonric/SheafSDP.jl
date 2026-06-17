@@ -100,17 +100,17 @@ end
 #
 function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
                cones::Vector{<:Cone}, p::AbstractVector{T}, d::AbstractVector{T},
-               B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+               B::BlockSparseMatrix{T}) where {T}
     for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
         r = colrange(B, v)
         H_v = block(H, v, v, v)
         c = cache(caches, i, cone)
 
         # Update scaling cache
-        update_scaling!(c, cone, view(p, r), view(d, r), uplo)
+        update_scaling!(c, cone, view(p, r), view(d, r))
 
         # Compute Hessian block
-        hessian_block!(H_v, c, cone, uplo)
+        hessian_block!(H_v, c, cone)
     end
 end
 
@@ -148,11 +148,11 @@ function newton_step!(
     m = length(Δy)
 
     # f = H r_c - r_d
-    f = H * r_c - r_d
+    f = Symmetric(H, UPLO) * r_c - r_d
 
     # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
     # assumes F is already factored
-    solve_kkt_factored!(divwrk, itrwrk, Δp, Δy, r, F, B, f, r_p; α, atol, rtol, itmax)
+    solve_kkt!(divwrk, itrwrk, Δp, Δy, r, F, B, f, r_p; α, atol, rtol, itmax)
 
     # recover Δy = -w (solve_kkt! returns w in Δy)
     lmul!(-1, Δy)
@@ -183,12 +183,12 @@ end
 function corrector_rhs!(r_c::AbstractVector{T}, caches::Caches{T},
                         cones::Vector{<:Cone}, p::AbstractVector{T}, d::AbstractVector{T},
                         Δp::AbstractVector{T}, Δd::AbstractVector{T},
-                        σμ::Real, B::BlockSparseMatrix{T}, uplo::Val{UPLO}) where {T, UPLO}
+                        σμ::Real, B::BlockSparseMatrix{T}) where {T}
     for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
         r = colrange(B, v)
         c = cache(caches, i, cone)
         corrector_term!(view(r_c, r), c, cone, view(p, r), view(d, r),
-                        view(Δp, r), view(Δd, r), σμ, uplo)
+                        view(Δp, r), view(Δd, r), σμ)
     end
     return r_c
 end
@@ -199,7 +199,7 @@ end
 function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T},
                           Δp::AbstractVector{T}, Δd::AbstractVector{T},
                           caches::Caches{T}, cones::Vector{<:Cone},
-                          B::BlockSparseMatrix{T}, uplo::Val{UPLO}; γ::Real=0.99) where {T, UPLO}
+                          B::BlockSparseMatrix{T}; γ::Real=0.99) where {T}
     τ_p = one(T)
     τ_d = one(T)
 
@@ -208,8 +208,8 @@ function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T},
         c = cache(caches, i, cone)
 
         # Step lengths for this block
-        τ_p_v = max_step(c, cone, view(p, r), view(Δp, r), true, γ, uplo)
-        τ_d_v = max_step(c, cone, view(d, r), view(Δd, r), false, γ, uplo)
+        τ_p_v = max_step(c, cone, view(p, r), view(Δp, r), true, γ)
+        τ_d_v = max_step(c, cone, view(d, r), view(Δd, r), false, γ)
 
         τ_p = min(τ_p, τ_p_v)
         τ_d = min(τ_d, τ_d_v)
@@ -231,10 +231,9 @@ function initialize!(
     c::AbstractVector{T},
     g::AbstractVector{T},
     B::BlockSparseMatrix{T},
-    cones::Vector{<:Cone},
-    uplo::Val{UPLO};
+    cones::Vector{<:Cone};
     ξ::Union{Nothing, Real}=nothing
-) where {T, UPLO}
+) where {T}
     # Default scaling based on problem data
     if ξ === nothing
         ξ = max(one(T), norm(c), norm(g))
@@ -246,9 +245,11 @@ function initialize!(
     # P = D = ξ·e for each block (cone identity)
     for (v, cone) in zip(vtxs(B), cones)
         r = colrange(B, v)
-        identity!(view(p, r), cone, ξ, uplo)
-        identity!(view(d, r), cone, ξ, uplo)
+        identity!(view(p, r), cone)
+        identity!(view(d, r), cone)
     end
+    rmul!(p, ξ)
+    rmul!(d, ξ)
 
     return p, d, y
 end
@@ -260,10 +261,9 @@ function initialize!(
     y::AbstractVector{T},
     c::AbstractVector{T},
     g::AbstractVector{T},
-    B::BlockSparseMatrix{T},
-    uplo::Val{UPLO};
+    B::BlockSparseMatrix{T};
     ξ::Union{Nothing, Real}=nothing
-) where {T, UPLO}
+) where {T}
     # Default scaling based on problem data
     if ξ === nothing
         ξ = max(one(T), norm(c), norm(g))
@@ -282,8 +282,8 @@ function initialize!(
         block = ξ * Matrix{T}(I, d_v, d_v)
 
         # svec into p and d
-        svec!(view(p, r), block, uplo)
-        svec!(view(d, r), block, uplo)
+        svec!(view(p, r), block)
+        svec!(view(d, r), block)
     end
 
     return p, d, y
@@ -415,7 +415,6 @@ function solve!(
     rp_history = T[]
     rd_history = T[]
 
-    uplo = Val(UPLO)
     status = :max_iter
     norm_B_sq = norm(B)^2
 
@@ -454,7 +453,7 @@ function solve!(
         end
 
         # Assemble H (NT scaling + Hessian) via cone-dispatched interface
-        hess!(H, caches, cones, p, d, B, uplo)
+        hess!(H, caches, cones, p, d, B)
 
         # Scale α so that τ_aug=1 is a reasonable default
         α = τ_aug * norm(Symmetric(H, UPLO)) / norm_B_sq
@@ -468,7 +467,7 @@ function solve!(
                      r_c, r_p, r_d; α, atol, rtol, itmax)
 
         # Step to boundary for affine direction
-        τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B, uplo; γ=one(T))
+        τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; γ=one(T))
 
         # Compute μ_aff
         p_aff = p + τ_p_aff * Δp_aff
@@ -479,12 +478,12 @@ function solve!(
         σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
 
         # ===== Corrector step (reuses same factorization) =====
-        corrector_rhs!(r_c, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B, uplo)
+        corrector_rhs!(r_c, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
         newton_step!(Δp, Δy, Δd, divwrk, itrwrk, r, F, B, H,
                      r_c, r_p, r_d; α, atol, rtol, itmax)
 
         # Step to boundary
-        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B, uplo; γ)
+        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; γ)
         push!(τ_p_history, τ_p)
         push!(τ_d_history, τ_d)
 

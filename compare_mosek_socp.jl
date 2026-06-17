@@ -13,15 +13,15 @@ using BlockSparseArrays: vtxs, colrange, ncols
 
 Random.seed!(42)
 
-# Problem size
+# Problem size - tuned for SheafSDP advantage (large stalks)
 nv = 100
-dv = 5   # vertex stalk dimension (SOC dimension)
-de = 3   # edge stalk dimension
+dv = 34  # vertex stalk dimension (SOC dimension)
+de = 12  # edge stalk dimension
 
 # Create edges (sparse graph)
 edges = Tuple{Int,Int}[]
 for i in 1:nv, j in i+1:nv
-    rand() < 0.08 && push!(edges, (i, j))
+    rand() < 0.12 && push!(edges, (i, j))
 end
 # Ensure no isolated vertices
 edge_set = Set(edges)
@@ -81,13 +81,13 @@ cones = [SOC() for _ in 1:nv]
 
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, F, L; cones, ε_feas=1e-8, ε_μ=0.1, max_iter=200, τ_aug=1000.0)
+solve!(p, d, y, c, g, B, F, L; cones, ε_feas=1e-8, ε_μ=1e-8, max_iter=200, τ_aug=5000.0)
 
 # Solve with SheafSDP (timed)
 println("Solving SOCP with SheafSDP (SOC cones)...")
 p, d, y = copy(p0), copy(d0), copy(y0)
 t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
-                               cones, ε_feas=1e-8, ε_μ=0.1, max_iter=200, τ_aug=1000.0)
+                               cones, ε_feas=1e-8, ε_μ=1e-8, max_iter=200, τ_aug=5000.0)
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  objective: $obj_sheaf")
@@ -124,7 +124,8 @@ t2 = @elapsed optimize!(model)
 println("  time: $(round(t2, digits=3))s")
 println("  iterations: $(MOI.get(model, MOI.SimplexIterations()))")  # for LP
 println("  barrier iters: $(MOI.get(model, MOI.BarrierIterations()))")  # for conic
-obj_mosek = objective_value(model)
+println("  status: $(termination_status(model))")
+obj_mosek = termination_status(model) == MOI.OPTIMAL ? objective_value(model) : NaN
 println("  objective: $obj_mosek")
 println()
 
