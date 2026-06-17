@@ -4,7 +4,7 @@ using LinearAlgebra
 using SparseArrays
 using Graphs
 using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, ChordalSymbolic,
-                                 ChordalTriangular, triangular, fronts, diagblock,
+                                 ChordalTriangular, FChordalTriangular, triangular, fronts, diagblock,
                                  DivisionWorkspace, FactorizationWorkspace, symbolic
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
@@ -19,5 +19,6 @@ include("ipm.jl")
 export sheaf, solve_kkt!, factor_kkt!
 export solve!, initialize!, SolverResult
 export Cone, SDP, POS, SOC, NOC
+export KKTSettings, UzawaSettings
 
 end # module SheafSDP

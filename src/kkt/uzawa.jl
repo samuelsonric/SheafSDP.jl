@@ -1,30 +1,36 @@
+@kwdef struct UzawaSettings{T} <: KKTSettings{T}
+    aaug::T = zero(T)
+    raug::T = one(T)
+    atol::T = √eps(T)
+    rtol::T = √eps(T)
+    itmax::Int = 1000
+end
+
 struct UzawaWorkspace{
         UPLO,
         T,
         I <: Integer,
-        Fac <: ChordalCholesky{UPLO, T, I},
-        Tri <: ChordalTriangular{:N, UPLO, T, I},
-        FacWrk <: FactorizationWorkspace{T, I},
-        DivWrk <: DivisionWorkspace{T, I},
         ItrWrk <: IterationWorkspace{T}
     } <: KKTWorkspace{T}
-    F::Fac
-    L::Tri
-    facwrk::FacWrk
-    divwrk::DivWrk
+    F::FChordalTriangular{:N, UPLO, T, I}
+    L::FChordalTriangular{:N, UPLO, T, I}
+    facwrk::FactorizationWorkspace{T, I}
+    divwrk::DivisionWorkspace{T, I}
     itrwrk::ItrWrk
     r::Vector{T}
     α::Scalar{T}
+    nrm::T
 end
 
-function UzawaWorkspace(F::ChordalCholesky{UPLO, T, I}, L::ChordalTriangular{:N, UPLO, T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
+function UzawaWorkspace(F::ChordalTriangular{:N, UPLO, T, I}, L::ChordalTriangular{:N, UPLO, T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
     m = size(B, 1)
     facwrk = FactorizationWorkspace(F)
     divwrk = DivisionWorkspace(F, 1)
     itrwrk = CgWorkspace(m, m, Vector{T})
     r = zeros(T, m)
     α = ones(T)
-    return UzawaWorkspace(F, L, facwrk, divwrk, itrwrk, r, α)
+    nrm = norm(B)^2
+    return UzawaWorkspace(F, L, facwrk, divwrk, itrwrk, r, α, nrm)
 end
 
 #
@@ -32,11 +38,6 @@ end
 #
 #   F = A
 #
-function copydia!(F::ChordalCholesky, A::BlockSparseMatrix)
-    copydia!(triangular(F), A)
-    return F
-end
-
 function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
     fill!(L, false)
 
@@ -67,9 +68,10 @@ function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
     return L
 end
 
-function init_kkt!(kktwrk::UzawaWorkspace, A::BlockSparseMatrix; α::Real=1.0)
+function init_kkt!(kktwrk::UzawaWorkspace{UPLO, T}, kktset::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
+    α = max(kktset.aaug, kktset.raug * norm(Symmetric(A, :L)) / kktwrk.nrm)
     kktwrk.α[] = α
-    init_uzw!(kktwrk.facwrk, kktwrk.F, kktwrk.L, A; α)
+    init_uzw!(kktwrk.facwrk, kktwrk.F, kktwrk.L, A, α)
 end
 
 # form the augmented block
@@ -79,32 +81,29 @@ end
 # and factorize it
 function init_uzw!(
         facwrk::FactorizationWorkspace{T},
-        F::ChordalCholesky{UPLO, T},
+        F::ChordalTriangular{:N, UPLO, T},
         L::ChordalTriangular{:N, UPLO, T},
-        A::BlockSparseMatrix{T};
-        α::Real=1.0
+        A::BlockSparseMatrix{T},
+        α::T
     ) where {UPLO, T}
-    n = size(F, 1)
-    @assert size(L, 1) == n
+    @assert size(F, 1) == size(L, 1) == size(A, 1)
 
-    copydia!(F.L, A)
-    axpby!(α, L, 1, F.L)
+    copydia!(F, A)
+    axpby!(α, L, 1, F)
     cholesky!(facwrk, F)
     return
 end
 
 function solve_kkt!(
     kktwrk::UzawaWorkspace{UPLO, T},
+    kktset::UzawaSettings{T},
     x::AbstractVector{T},
     y::AbstractVector{T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
-    g::AbstractVector{T};
-    atol::Real=√eps(T),
-    rtol::Real=√eps(T),
-    itmax::Integer=1000
+    g::AbstractVector{T}
 ) where {UPLO, T}
-    return solve_uzw!(kktwrk.divwrk, kktwrk.itrwrk, x, y, kktwrk.r, kktwrk.F, B, f, g; α=kktwrk.α[], atol, rtol, itmax)
+    return solve_uzw!(kktwrk.divwrk, kktwrk.itrwrk, x, y, kktwrk.r, kktwrk.F, B, f, g, kktwrk.α[], kktset.atol, kktset.rtol, kktset.itmax)
 end
 
 #
@@ -119,14 +118,14 @@ function solve_uzw!(
         x::AbstractVector{T},
         y::AbstractVector{T},
         r::AbstractVector{T},
-        F::ChordalCholesky{UPLO, T},
+        F::ChordalTriangular{:N, UPLO, T},
         B::BlockSparseMatrix{T},
         f::AbstractVector{T},
-        g::AbstractVector{T};
-        α::Real=1.0,
-        atol::Real=√eps(T),
-        rtol::Real=√eps(T),
-        itmax::Integer=1000
+        g::AbstractVector{T},
+        α::T,
+        atol::T,
+        rtol::T,
+        itmax::Int
     ) where {UPLO, T}
     m, n = size(B)
 
@@ -139,11 +138,12 @@ function solve_uzw!(
     #
     # solve for x:
     #
-    #   F x = f + α Bᵀ g
+    #   F F' x = f + α Bᵀ g
     #
     copyto!(x, f)
     mul!(x, B', g, α, 1)
     ldiv!(divwrk, F, x)
+    ldiv!(divwrk, F', x)
     #
     # compute the residual
     #
@@ -160,16 +160,17 @@ function solve_uzw!(
         #
         # where x solves
         #
-        #   F x = Bᵀ b
+        #   F F' x = Bᵀ b
         #
         mul!(x, B', b)
         ldiv!(divwrk, F, x)
+        ldiv!(divwrk, F', x)
         mul!(u, B, x)
     end
     #
     # S is the augmented Schur complement:
     #
-    #   S = B F⁻¹ Bᵀ
+    #   S = B (F F')⁻¹ Bᵀ
     #
     S = LinearOperator(T, m, m, true, true, schur!)
     #
@@ -190,11 +191,12 @@ function solve_uzw!(
     #
     # solve for x:
     #
-    #   F x = f - Bᵀ r
+    #   F F' x = f - Bᵀ r
     #
     copyto!(x, f)
     mul!(x, B', r, -1, 1)
     ldiv!(divwrk, F, x)
+    ldiv!(divwrk, F', x)
 
     return niter(itrwrk)
 end

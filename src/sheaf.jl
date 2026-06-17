@@ -11,10 +11,11 @@ Arguments:
 - ne: number of edges
 - edges: vector of (u, v) tuples
 
-Returns (P, Q, L, B) where:
+Returns (P, Q, F, L, B) where:
 - P: vertex permutation (block-aware fill-reducing)
 - Q: secondary permutation
-- L: ChordalCholesky of sheaf Laplacian (B'B) - cached template
+- F: ChordalTriangular working storage for factorization
+- L: ChordalTriangular of sheaf Laplacian (B'B) - cached template
 - B: coboundary matrix as BlockSparseMatrix, permuted by P
 """
 function sheaf(I::Vector{Int}, J::Vector{Int}, V::Vector{<:AbstractMatrix},
@@ -89,8 +90,8 @@ function sheaf(I::Vector{Int}, J::Vector{Int}, V::Vector{<:AbstractMatrix},
     L_chol = ChordalCholesky(L_sparse, S)
 
     # Return working factorization object and cached triangular
-    F = similar(L_chol)
-    L = L_chol.L
+    F = triangular(similar(L_chol))
+    L = triangular(L_chol)
 
     return P, Q, F, L, B
 end

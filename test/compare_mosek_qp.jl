@@ -75,13 +75,13 @@ println()
 
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, F, L; Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt_frac=50000.0)
+solve!(p, d, y, c, g, B, F, L; Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
 
 # Solve with our solver
 println("Solving QP with SheafSDP...")
 p, d, y = copy(p0), copy(d0), copy(y0)
 t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
-                               Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt_frac=50000.0)
+                               Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
 obj_sheaf = dot(c, result.p) + 0.5 * dot(result.p, Symmetric(Q, :L) * result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  converged: $(result.converged)")

@@ -10,15 +10,11 @@
 #
 # solver parameters
 #
-@kwdef struct Parameters{T}
+@kwdef struct IPMSettings{T}
     step_frac::T = 0.99                     # step size damping
     feas_tol::T = 1e-8                # feasibility tolerance
     gap_tol::T = 1e-8                   # duality gap tolerance
     itmax::Int = 100             # max IPM iterations
-    kkt_frac::T = 1.0                  # augmentation parameter
-    kkt_atol::T = √eps(T)           # KKT solver absolute tolerance
-    kkt_rtol::T = √eps(T)           # KKT solver relative tolerance
-    kkt_itmax::Int = 1000           # KKT solver max iterations
     verbose::Bool = false           # verbosity flag
     stall_window::Int = 5           # stall detection window
     stall_threshold::T = 0.99       # stall detection threshold
@@ -143,19 +139,17 @@ function newton_step!(
     Δp::AbstractVector{T},
     Δy::AbstractVector{T},
     Δd::AbstractVector{T},
-    kktwrk::UzawaWorkspace{UPLO, T},
+    kktwrk::KKTWorkspace{T},
+    kktset::KKTSettings{T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
     r_p::AbstractVector{T},
     r_d::AbstractVector{T},
-    Q;
-    atol::Real=√eps(T),
-    rtol::Real=√eps(T),
-    itmax::Integer=1000
-) where {UPLO, T}
+    Q
+) where {T}
     # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
     # assumes F is already factored
-    solve_kkt!(kktwrk, Δp, Δy, B, f, r_p; atol, rtol, itmax)
+    solve_kkt!(kktwrk, kktset, Δp, Δy, B, f, r_p)
 
     # recover Δy = -w (solve_kkt! returns w in Δy)
     lmul!(-1, Δy)
@@ -360,7 +354,7 @@ function solve!(
     c::AbstractVector{T},
     g::AbstractVector{T},
     B::BlockSparseMatrix{T},
-    F::ChordalCholesky{UPLO, T},
+    F::ChordalTriangular{:N, UPLO, T},
     L::ChordalTriangular{:N, UPLO, T};
     Q::BlockSparseMatrix{T},
     cones::Vector{<:Cone}=[SDP() for _ in vtxs(B)],
@@ -368,10 +362,7 @@ function solve!(
     feas_tol::Real=1e-8,
     gap_tol::Real=1e-8,
     itmax::Integer=100,
-    kkt_frac::Real=1.0,
-    kkt_atol::Real=√eps(T),
-    kkt_rtol::Real=√eps(T),
-    kkt_itmax::Integer=1000,
+    kkt::KKTSettings{T}=UzawaSettings{T}(),
     verbose::Bool=false,
     stall_window::Int=5,
     stall_threshold::Real=0.99,
@@ -382,9 +373,9 @@ function solve!(
     m = length(y)
     ν = conedegree(cones, B)
 
-    params = Parameters{T}(; step_frac, feas_tol, gap_tol, itmax, kkt_frac, kkt_atol, kkt_rtol, kkt_itmax,
+    ipmset = IPMSettings{T}(; step_frac, feas_tol, gap_tol, itmax,
                            verbose, stall_window, stall_threshold, τ_collapse_threshold)
-    kkt = UzawaWorkspace(F, L, B)
+    kktwrk = UzawaWorkspace(F, L, B)
 
     r_p = zeros(T, m)
     r_d = zeros(T, n)
@@ -410,9 +401,8 @@ function solve!(
     rd_history = T[]
 
     status = :itmax
-    norm_B_sq = norm(B)^2
 
-    for iter in 1:params.itmax
+    for iter in 1:ipmset.itmax
         # Compute residuals and μ
         residuals!(r_p, r_d, B, p, d, y, c, g, Q)
         μ_curr = ν > 0 ? mu(p, d, ν) : zero(T)
@@ -424,13 +414,13 @@ function solve!(
         push!(rp_history, norm_rp)
         push!(rd_history, norm_rd)
 
-        if params.verbose
+        if ipmset.verbose
             println("Iter $iter: μ = $μ_curr, ||r_p|| = $norm_rp, ||r_d|| = $norm_rd")
         end
 
         # Check convergence
-        gap_ok = ν == 0 || μ_curr < params.gap_tol
-        if norm_rp < params.feas_tol && norm_rd < params.feas_tol && gap_ok
+        gap_ok = ν == 0 || μ_curr < ipmset.gap_tol
+        if norm_rp < ipmset.feas_tol && norm_rd < ipmset.feas_tol && gap_ok
             status = :optimal
             return SolverResult{T}(
                 copy(p), copy(d), copy(y), true, iter,
@@ -440,9 +430,9 @@ function solve!(
         end
 
         # Check for stalling
-        if is_stalled(μ_history; window=params.stall_window, threshold=params.stall_threshold)
+        if is_stalled(μ_history; window=ipmset.stall_window, threshold=ipmset.stall_threshold)
             status = :stalled
-            if params.verbose
+            if ipmset.verbose
                 println("Warning: μ stalling detected")
             end
         end
@@ -450,17 +440,13 @@ function solve!(
         # Assemble H (NT scaling + Hessian) via cone-dispatched interface
         hess!(H, caches, cones, p, d, B, Q)
 
-        # Scale α so that kkt_frac=1 is a reasonable default
-        α = params.kkt_frac * norm(Symmetric(H, :L)) / norm_B_sq
-
         # Factor F = H + α B'B once per iteration
-        init_kkt!(kkt, H; α)
+        init_kkt!(kktwrk, kkt, H)
 
         # ===== Predictor (affine) step =====
         # f = H·(-p) - r_d = -d - r_d (by NT property: H·p = d)
         @. f = -(d + r_d)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, kkt, B,
-                     f, r_p, r_d, Q; atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
+        newton_step!(Δp_aff, Δy_aff, Δd_aff, kktwrk, kkt, B, f, r_p, r_d, Q)
 
         # Step to boundary for affine direction
         τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; step_frac=one(T))
@@ -477,19 +463,18 @@ function solve!(
         # corrector_rhs! now returns H·r_c directly per block
         corrector_rhs!(f, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
         axpy!(-1, r_d, f)
-        newton_step!(Δp, Δy, Δd, kkt, B,
-                     f, r_p, r_d, Q; atol=params.kkt_atol, rtol=params.kkt_rtol, itmax=params.kkt_itmax)
+        newton_step!(Δp, Δy, Δd, kktwrk, kkt, B, f, r_p, r_d, Q)
 
         # Step to boundary
-        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; step_frac=params.step_frac)
+        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; step_frac=ipmset.step_frac)
         push!(τ_p_history, τ_p)
         push!(τ_d_history, τ_d)
 
         # Check for numerical failure
         if is_numerical_failure(τ_p_history, τ_d_history, rp_history, rd_history;
-                                 τ_threshold=params.τ_collapse_threshold)
+                                 τ_threshold=ipmset.τ_collapse_threshold)
             status = :numerical_failure
-            if params.verbose
+            if ipmset.verbose
                 println("Warning: numerical failure detected (τ collapse + residual plateau)")
             end
         end
@@ -501,7 +486,7 @@ function solve!(
     end
 
     return SolverResult{T}(
-        copy(p), copy(d), copy(y), false, params.itmax,
+        copy(p), copy(d), copy(y), false, ipmset.itmax,
         μ_history, τ_p_history, τ_d_history, rp_history, rd_history,
         status
     )
