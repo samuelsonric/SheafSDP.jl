@@ -8,9 +8,10 @@ using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, 
                                  DivisionWorkspace, FactorizationWorkspace, symbolic
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
-using BlockSparseArrays: BlockSparseMatrix, block, colrange, nvtxs, vtxs, ncols, blocksparse
+using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nblks, blocksparse
 using Base: oneto
 
+include("utils.jl")
 include("cone/cone.jl")
 include("sheaf.jl")
 include("kkt/kkt.jl")

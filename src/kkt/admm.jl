@@ -1,18 +1,20 @@
 @kwdef struct ADMMSettings{T} <: KKTSettings{T}
-    aaug::T   = zero(T)
-    raug::T   = one(T)
-    relax::T  = one(T)
-    atol::T   = √eps(T)
-    rtol::T   = √eps(T)
+    aaug::T    = zero(T)
+    raug::T    = one(T)
+    atol::T    = √eps(T)
+    rtol::T    = √eps(T)
+    relax::T   = one(T)
     itmax::Int = 1000
-    iatol::T  = √eps(T)
-    irtol::T  = √eps(T)
+    iatol::T   = 1e-6
+    irtol::T   = 1e-6
+    irelax::T  = one(T)
     iitmax::Int = 1000
 end
 
-struct ADMMWorkspace{T, I <: Integer, M <: BlockSparseMatrix{T, I}, ItrWrk <: IterationWorkspace{T}} <: KKTWorkspace{T}
-    F::M
+struct ADMMWorkspace{UPLO, T, I <: Integer, ItrWrk <: IterationWorkspace{T}} <: KKTWorkspace{T}
+    F::BlockSparseMatrix{T, I}
     itrwrk::ItrWrk
+    M::SSORPreconditioner{UPLO, T, I}
     z::Vector{T}
     u::Vector{T}
     s::Vector{T}
@@ -23,10 +25,11 @@ struct ADMMWorkspace{T, I <: Integer, M <: BlockSparseMatrix{T, I}, ItrWrk <: It
     nrm::T
 end
 
-function ADMMWorkspace(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}) where {T, I <: Integer}
+function ADMMWorkspace{UPLO}(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
     m, n = size(B)
     @assert size(F, 1) == n
     itrwrk = CgWorkspace(n, n, Vector{T})
+    M = SSORPreconditioner{UPLO}(B)
     z = zeros(T, n)
     u = zeros(T, n)
     s = zeros(T, n)
@@ -35,37 +38,30 @@ function ADMMWorkspace(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}) w
     α = ones(T)
     τ = ones(T)
     nrm = norm(B)^2
-    return ADMMWorkspace(F, itrwrk, z, u, s, r, t, α, τ, nrm)
+    return ADMMWorkspace(F, itrwrk, M, z, u, s, r, t, α, τ, nrm)
 end
 
-function init_kkt!(wrk::ADMMWorkspace{T}, set::ADMMSettings{T}, A::BlockSparseMatrix) where {T}
+function ADMMWorkspace(F::BlockSparseMatrix, B::BlockSparseMatrix)
+    return ADMMWorkspace{:L}(F, B)
+end
+
+function init_kkt!(wrk::ADMMWorkspace{UPLO, T}, set::ADMMSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
     α = set.aaug + set.raug * norm(Symmetric(A, :L))
     wrk.α[] = α
     wrk.τ[] = inv(wrk.nrm)
-    init_admm!(wrk.F, A, α)
+    wrk.M.ω[] = set.irelax
+    init_admm!(wrk.F, A, α, UPLO)
     return wrk
 end
 
-function init_admm!(F::BlockSparseMatrix{T}, A::BlockSparseMatrix{T}, α::T) where {T}
+function init_admm!(F::BlockSparseMatrix, A::BlockSparseMatrix, α::Number, uplo::Symbol)
     @assert size(F, 1) == size(A, 1)
-
-    for v in vtxs(F)
-        Fv = block(F, v, v, v)
-        Av = block(A, v, v, v)
-        copyto!(Fv, Av)
-
-        for i in diagind(Fv)
-            Fv[i] += α
-        end
-
-        cholesky!(Symmetric(Fv, :L))
-    end
-
-    return F
+    copyto!(F, A)
+    return cholblockdiag!(F, uplo, α)
 end
 
 function solve_kkt!(
-        wrk::ADMMWorkspace{T},
+        wrk::ADMMWorkspace{UPLO, T},
         set::ADMMSettings{T},
         x::AbstractVector{T},
         y::AbstractVector{T},
@@ -73,9 +69,15 @@ function solve_kkt!(
         B::BlockSparseMatrix{T},
         f::AbstractVector{T},
         g::AbstractVector{T}
-    ) where {T}
-    F = LowerTriangular(wrk.F)
-    return solve_admm!(wrk.itrwrk, F, x, y, wrk.z, wrk.u, wrk.s, wrk.r, wrk.t, A, B, f, g,
+    ) where {UPLO, T}
+
+    if UPLO === :L
+        F = LowerTriangular(wrk.F)
+    else
+        F = UpperTriangular(wrk.F)
+    end
+
+    return solve_admm!(wrk.itrwrk, wrk.M, F, x, y, wrk.z, wrk.u, wrk.s, wrk.r, wrk.t, A, B, f, g,
                        wrk.α[], wrk.τ[], set.relax, set.atol, set.rtol, set.itmax,
                        set.iatol, set.irtol, set.iitmax)
 end
@@ -88,7 +90,8 @@ end
 #
 function solve_admm!(
         itrwrk::IterationWorkspace{T},
-        F::LowerTriangular,
+        M::SSORPreconditioner{UPLO, T},
+        F::AbstractMatrix{T},
         x::AbstractVector{T},
         y::AbstractVector{T},
         z::AbstractVector{T},
@@ -109,7 +112,7 @@ function solve_admm!(
         iatol::T,
         irtol::T,
         iitmax::Int
-    ) where {T}
+    ) where {UPLO, T}
     m, n = size(B)
 
     @assert length(x) == n
@@ -171,7 +174,7 @@ function solve_admm!(
         #
         #   L z' = Bᵀ g
         #
-        it!(itrwrk, L, r, u; α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
+        it!(itrwrk, L, r, u; M, α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
         #
         # update u:
         #
@@ -224,7 +227,7 @@ function solve_admm!(
     #
     copyto!(s, f)
     mul!(s, A, x, -1, 1)
-    it!(itrwrk, L, s; α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
+    it!(itrwrk, L, s; M, α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
     #
     # compute
     #

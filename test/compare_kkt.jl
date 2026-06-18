@@ -93,21 +93,21 @@ for aaug in [1e4, 1e5, 1e6, 1e7, 1e8, 1e9]
 end
 println()
 
-uzw_set = UzawaSettings{Float64}(atol=1e-10, rtol=1e-10, itmax=2000)
+uzw_set = UzawaSettings{Float64}(aaug=1e6, atol=1e-10, rtol=1e-10, itmax=2000)
 
 # ADMM workspace and settings
 F_admm = SheafSDP.allocate_H(Float64, B)
 admm_wrk = SheafSDP.ADMMWorkspace(F_admm, B)
 
 # Warmup ADMM
-admm_set_warmup = SheafSDP.ADMMSettings{Float64}(atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-12, irtol=1e-12, iitmax=500)
+admm_set_warmup = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
 SheafSDP.init_kkt!(admm_wrk, admm_set_warmup, A)
 SheafSDP.solve_kkt!(admm_wrk, admm_set_warmup, x_admm, y_admm, A, B, f, g)
 
 # Try different augmentation parameters
 println("ADMM augmentation sweep (relax=1.0):")
 for aaug in [1e5, 5e5, 1e6]
-    admm_set = SheafSDP.ADMMSettings{Float64}(aaug=aaug, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-12, irtol=1e-12, iitmax=500)
+    admm_set = SheafSDP.ADMMSettings{Float64}(aaug=aaug, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
     SheafSDP.init_kkt!(admm_wrk, admm_set, A)
     fill!(x_admm, 0); fill!(y_admm, 0)
     fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
@@ -119,7 +119,7 @@ println()
 # Try different relaxation parameters (with default aaug)
 println("ADMM relaxation sweep (aaug=0, raug=1):")
 for relax in [0.5, 0.8, 1.0, 1.2, 1.5, 1.8]
-    admm_set = SheafSDP.ADMMSettings{Float64}(relax=relax, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-12, irtol=1e-12, iitmax=500)
+    admm_set = SheafSDP.ADMMSettings{Float64}(relax=relax, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
     SheafSDP.init_kkt!(admm_wrk, admm_set, A)
     fill!(x_admm, 0); fill!(y_admm, 0)
     fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
@@ -128,7 +128,7 @@ for relax in [0.5, 0.8, 1.0, 1.2, 1.5, 1.8]
 end
 println()
 
-admm_set = SheafSDP.ADMMSettings{Float64}(atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-12, irtol=1e-12, iitmax=500)
+admm_set = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
 
 # Initialize both
 SheafSDP.init_kkt!(uzw_wrk, uzw_set, A)

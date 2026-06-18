@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Richard Samuelson <samuelson.rick@gmail.com>"]
 
 [deps]
+AlgebraicMultigrid = "2169fc97-5a83-5252-b627-83903c6c433c"
 BlockSparseArrays = "719290be-2e67-4839-b464-1afd1c6ede3f"
 CliqueTrees = "60701a23-6482-424a-84db-faee86b9b1f8"
 ECOS = "e2685f51-7e38-5353-a97d-a921fd2c8199"
@@ -22,6 +23,7 @@ BlockSparseArrays = {path = "../BlockSparseArrays.jl"}
 CliqueTrees = {path = "../CliqueTrees.jl"}
 
 [compat]
+AlgebraicMultigrid = "2.0.0"
 CliqueTrees = "1.19.3"
 ECOS = "1.1.3"
 FixedSizeArrays = "1.3.0"

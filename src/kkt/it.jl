@@ -1,11 +1,12 @@
 mutable struct RiWorkspace{T}
     x::Vector{T}
     r::Vector{T}
+    z::Vector{T}
     niter::Int
 end
 
 function RiWorkspace(n::Int, ::Type{Vector{T}}) where T
-    return RiWorkspace(zeros(T, n), zeros(T, n), 0)
+    return RiWorkspace(zeros(T, n), zeros(T, n), zeros(T, n), 0)
 end
 
 const IterationWorkspace{T} = Union{RiWorkspace{T}, CgWorkspace{T}, CrWorkspace{T}}
@@ -16,16 +17,23 @@ const IterationWorkspace{T} = Union{RiWorkspace{T}, CgWorkspace{T}, CrWorkspace{
 #   S x = b
 #
 function ri!(
-    workspace::RiWorkspace{T},
-    S,
-    b::AbstractVector{T};
-    α::Real=1.0,
-    atol::Real=√eps(T),
-    rtol::Real=√eps(T),
-    itmax::Integer=1000
-) where {T}
+        workspace::RiWorkspace{T},
+        S,
+        b::AbstractVector{T};
+        M=I,
+        ldiv::Bool=true,
+        α::Real=1.0,
+        atol::Real=√eps(T),
+        rtol::Real=√eps(T),
+        itmax::Integer=1000,
+    ) where {T}
     fill!(workspace.x, 0)
-    return ri_impl!(workspace, S, b; α, atol, rtol, itmax)
+
+    if ldiv
+        return ri_impl!(workspace, S, b, M, Val(true); α, atol, rtol, itmax)
+    else
+        return ri_impl!(workspace, S, b, M, Val(false); α, atol, rtol, itmax)
+    end
 end
 
 function ri!(
@@ -33,26 +41,36 @@ function ri!(
         S,
         b::AbstractVector{T},
         x0::AbstractVector{T};
+        M=I,
+        ldiv::Bool=true,
         α::Real=1.0,
         atol::Real=√eps(T),
         rtol::Real=√eps(T),
-        itmax::Integer=1000
+        itmax::Integer=1000,
     ) where {T}
     copyto!(workspace.x, x0)
-    return ri_impl!(workspace, S, b; α, atol, rtol, itmax)
+
+    if ldiv
+        return ri_impl!(workspace, S, b, M, Val(true); α, atol, rtol, itmax)
+    else
+        return ri_impl!(workspace, S, b, M, Val(false); α, atol, rtol, itmax)
+    end
 end
 
 function ri_impl!(
         workspace::RiWorkspace{T},
         S,
-        b::AbstractVector{T};
+        b::AbstractVector{T},
+        M,
+        ::Val{LDIV};
         α::Real=1.0,
         atol::Real=√eps(T),
         rtol::Real=√eps(T),
-        itmax::Integer=1000
-    ) where {T}
+        itmax::Integer=1000,
+    ) where {T, LDIV}
     x = workspace.x
     r = workspace.r
+    z = workspace.z
     #
     # compute stopping tolerance
     #
@@ -74,11 +92,21 @@ function ri_impl!(
             return workspace
         end
         #
+        # apply preconditioner
+        #
+        #   z = M⁻¹ r
+        #
+        if LDIV
+            ldiv!(z, M, r)
+        else
+            mul!(z, M, r)
+        end
+        #
         # update x:
         #
-        #   x = x + α r
+        #   x = x + α z
         #
-        axpy!(α, r, x)
+        axpy!(α, z, x)
     end
 
     @warn "Richardson did not converge in $itmax iterations"
@@ -86,25 +114,25 @@ function ri_impl!(
     return workspace
 end
 
-function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}; α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
+function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}; M=I, ldiv::Bool=true, α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
     if itrwrk isa RiWorkspace
-        ri!(itrwrk, S, b; α, atol, rtol, itmax)
+        ri!(itrwrk, S, b; M, ldiv, α, atol, rtol, itmax)
     elseif itrwrk isa CgWorkspace
-        cg!(itrwrk, S, b; atol, rtol, itmax)
+        cg!(itrwrk, S, b; M, ldiv, atol, rtol, itmax)
     else
-        cr!(itrwrk, S, b; atol, rtol, itmax)
+        cr!(itrwrk, S, b; M, ldiv, atol, rtol, itmax)
     end
 
     return itrwrk
 end
 
-function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}, x0::AbstractVector{T}; α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
+function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}, x0::AbstractVector{T}; M=I, ldiv::Bool=true, α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
     if itrwrk isa RiWorkspace
-        ri!(itrwrk, S, b, x0; α, atol, rtol, itmax)
+        ri!(itrwrk, S, b, x0; M, ldiv, α, atol, rtol, itmax)
     elseif itrwrk isa CgWorkspace
-        cg!(itrwrk, S, b, x0; atol, rtol, itmax)
+        cg!(itrwrk, S, b, x0; M, ldiv, atol, rtol, itmax)
     else
-        cr!(itrwrk, S, b, x0; atol, rtol, itmax)
+        cr!(itrwrk, S, b, x0; M, ldiv, atol, rtol, itmax)
     end
 
     return itrwrk
