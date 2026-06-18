@@ -69,12 +69,13 @@ function solve_kkt!(
         set::ADMMSettings{T},
         x::AbstractVector{T},
         y::AbstractVector{T},
+        A::BlockSparseMatrix{T},
         B::BlockSparseMatrix{T},
         f::AbstractVector{T},
         g::AbstractVector{T}
     ) where {T}
     F = LowerTriangular(wrk.F)
-    return solve_admm!(wrk.itrwrk, F, x, y, wrk.z, wrk.u, wrk.s, wrk.r, wrk.t, B, f, g,
+    return solve_admm!(wrk.itrwrk, F, x, y, wrk.z, wrk.u, wrk.s, wrk.r, wrk.t, A, B, f, g,
                        wrk.α[], wrk.τ[], set.relax, set.atol, set.rtol, set.itmax,
                        set.iatol, set.irtol, set.iitmax)
 end
@@ -95,6 +96,7 @@ function solve_admm!(
         s::AbstractVector{T},
         r::AbstractVector{T},
         t::AbstractVector{T},
+        A::BlockSparseMatrix{T},
         B::BlockSparseMatrix{T},
         f::AbstractVector{T},
         g::AbstractVector{T},
@@ -216,17 +218,17 @@ function solve_admm!(
         @warn "ADMM did not converge in $itmax iterations"
     end
     #
-    # solve for w
+    # solve for w:
     #
-    #   L w = α u
+    #   L z' = f - A x
     #
-    copyto!(s, u)
-    rmul!(s, α)
+    copyto!(s, f)
+    mul!(s, A, x, -1, 1)
     it!(itrwrk, L, s; α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
     #
     # compute
     #
-    #   y = B w
+    #   y = B z'
     #
     mul!(y, B, solution(itrwrk))
 

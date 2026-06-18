@@ -141,6 +141,7 @@ function newton_step!(
     Δd::AbstractVector{T},
     kktwrk::KKTWorkspace{T},
     kktset::KKTSettings{T},
+    H::BlockSparseMatrix{T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
     r_p::AbstractVector{T},
@@ -149,7 +150,7 @@ function newton_step!(
 ) where {T}
     # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
     # assumes F is already factored
-    solve_kkt!(kktwrk, kktset, Δp, Δy, B, f, r_p)
+    solve_kkt!(kktwrk, kktset, Δp, Δy, H, B, f, r_p)
 
     # recover Δy = -w (solve_kkt! returns w in Δy)
     lmul!(-1, Δy)
@@ -446,7 +447,7 @@ function solve!(
         # ===== Predictor (affine) step =====
         # f = H·(-p) - r_d = -d - r_d (by NT property: H·p = d)
         @. f = -(d + r_d)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, kktwrk, kkt, B, f, r_p, r_d, Q)
+        newton_step!(Δp_aff, Δy_aff, Δd_aff, kktwrk, kkt, H, B, f, r_p, r_d, Q)
 
         # Step to boundary for affine direction
         τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; step_frac=one(T))
@@ -463,7 +464,7 @@ function solve!(
         # corrector_rhs! now returns H·r_c directly per block
         corrector_rhs!(f, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
         axpy!(-1, r_d, f)
-        newton_step!(Δp, Δy, Δd, kktwrk, kkt, B, f, r_p, r_d, Q)
+        newton_step!(Δp, Δy, Δd, kktwrk, kkt, H, B, f, r_p, r_d, Q)
 
         # Step to boundary
         τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; step_frac=ipmset.step_frac)

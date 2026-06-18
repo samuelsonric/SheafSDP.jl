@@ -100,6 +100,7 @@ function solve_kkt!(
     set::UzawaSettings{T},
     x::AbstractVector{T},
     y::AbstractVector{T},
+    A::BlockSparseMatrix{T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
     g::AbstractVector{T}
