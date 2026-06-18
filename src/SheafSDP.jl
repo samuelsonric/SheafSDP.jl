@@ -19,6 +19,6 @@ include("ipm.jl")
 export sheaf, solve_kkt!, factor_kkt!
 export solve!, initialize!, SolverResult
 export Cone, SDP, POS, SOC, NOC
-export KKTSettings, UzawaSettings
+export KKTSettings, UzawaSettings, ADMMSettings
 
 end # module SheafSDP

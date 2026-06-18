@@ -68,10 +68,11 @@ function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
     return L
 end
 
-function init_kkt!(kktwrk::UzawaWorkspace{UPLO, T}, kktset::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
-    α = max(kktset.aaug, kktset.raug * norm(Symmetric(A, :L)) / kktwrk.nrm)
-    kktwrk.α[] = α
-    init_uzw!(kktwrk.facwrk, kktwrk.F, kktwrk.L, A, α)
+function init_kkt!(wrk::UzawaWorkspace{UPLO, T}, set::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
+    α = set.aaug + set.raug * norm(Symmetric(A, :L)) / wrk.nrm
+    wrk.α[] = α
+    init_uzw!(wrk.facwrk, wrk.F, wrk.L, A, α)
+    return wrk
 end
 
 # form the augmented block
@@ -91,19 +92,19 @@ function init_uzw!(
     copydia!(F, A)
     axpby!(α, L, 1, F)
     cholesky!(facwrk, F)
-    return
+    return F
 end
 
 function solve_kkt!(
-    kktwrk::UzawaWorkspace{UPLO, T},
-    kktset::UzawaSettings{T},
+    wrk::UzawaWorkspace{UPLO, T},
+    set::UzawaSettings{T},
     x::AbstractVector{T},
     y::AbstractVector{T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
     g::AbstractVector{T}
 ) where {UPLO, T}
-    return solve_uzw!(kktwrk.divwrk, kktwrk.itrwrk, x, y, kktwrk.r, kktwrk.F, B, f, g, kktwrk.α[], kktset.atol, kktset.rtol, kktset.itmax)
+    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, set.rtol, set.itmax)
 end
 
 #
