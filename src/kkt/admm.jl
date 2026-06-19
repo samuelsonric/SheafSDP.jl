@@ -1,4 +1,5 @@
-@kwdef struct ADMMSettings{T} <: KKTSettings{T}
+@kwdef struct ADMMSettings{T, P <: PreconditionerSettings{T}} <: KKTSettings{T}
+    prec::P = ICholSettings{T}()
     aaug::T    = zero(T)
     raug::T    = one(T)
     atol::T    = √eps(T)
@@ -7,14 +8,17 @@
     itmax::Int = 1000
     iatol::T   = 1e-6
     irtol::T   = 1e-6
-    irelax::T  = one(T)
     iitmax::Int = 1000
 end
 
-struct ADMMWorkspace{UPLO, T, I <: Integer, ItrWrk <: IterationWorkspace{T}} <: KKTWorkspace{T}
+function ADMMSettings{T}(; prec::P=ICholSettings{T}(), kwargs...) where {T, P <: PreconditionerSettings{T}}
+    return ADMMSettings{T, P}(; prec, kwargs...)
+end
+
+struct ADMMWorkspace{UPLO, T, I <: Integer, ItrWrk <: IterationWorkspace{T}, Prec <: Preconditioner{T}} <: KKTWorkspace{T}
     F::BlockSparseMatrix{T, I}
     itrwrk::ItrWrk
-    M::SSOR{UPLO, T, I}
+    M::Prec
     z::Vector{T}
     u::Vector{T}
     s::Vector{T}
@@ -25,11 +29,10 @@ struct ADMMWorkspace{UPLO, T, I <: Integer, ItrWrk <: IterationWorkspace{T}} <: 
     nrm::T
 end
 
-function ADMMWorkspace{UPLO}(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
+function ADMMWorkspace{UPLO}(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}, M::Prec) where {UPLO, T, I <: Integer, Prec <: Preconditioner{T}}
     m, n = size(B)
     @assert size(F, 1) == n
     itrwrk = CgWorkspace(n, n, Vector{T})
-    M = SSOR{UPLO}(B)
     z = zeros(T, n)
     u = zeros(T, n)
     s = zeros(T, n)
@@ -38,39 +41,39 @@ function ADMMWorkspace{UPLO}(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T,
     α = ones(T)
     τ = ones(T)
     nrm = norm(B)^2
-    return ADMMWorkspace(F, itrwrk, M, z, u, s, r, t, α, τ, nrm)
+    return ADMMWorkspace{UPLO, T, I, typeof(itrwrk), Prec}(F, itrwrk, M, z, u, s, r, t, α, τ, nrm)
 end
 
-function ADMMWorkspace(F::BlockSparseMatrix, B::BlockSparseMatrix)
-    return ADMMWorkspace{:L}(F, B)
+function ADMMWorkspace(F::BlockSparseMatrix{T}, B::BlockSparseMatrix{T}, M::Preconditioner{T}) where {T}
+    return ADMMWorkspace{:L}(F, B, M)
 end
 
 #
 # Initialize workspace for ADMM method
 #
 # Returns (perm, B, workspace) where:
-# - perm: identity permutation (oneto)
-# - B: unchanged input B
+# - perm: identity permutation (oneto) or RCM permutation for IChol
+# - B: unchanged input B or permuted B for IChol
 # - workspace: ADMMWorkspace ready for solve_kkt!
 #
-function make_kkt(::ADMMSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
+function make_kkt(set::ADMMSettings{T, Pr}, B::BlockSparseMatrix{T, I}) where {T, I, Pr}
+    R, P, B, M = make_prec(set.prec, B)
     F = allocblockdiag(B)
-    wrk = ADMMWorkspace(F, B)
-    return oneto(nvtxs(B)), B, wrk
+    wrk = ADMMWorkspace(F, B, M)
+    return R, P, B, wrk
 end
 
 function init_kkt!(wrk::ADMMWorkspace{UPLO, T}, set::ADMMSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
     α = set.aaug + set.raug * norm(Symmetric(A, :L))
     wrk.α[] = α
     wrk.τ[] = inv(wrk.nrm)
-    wrk.M.ω[] = set.irelax
     init_admm!(wrk.F, A, α, UPLO)
     return wrk
 end
 
 function init_admm!(F::BlockSparseMatrix, A::BlockSparseMatrix, α::Number, uplo::Symbol)
     @assert size(F, 1) == size(A, 1)
-    copyto!(F, A)
+    copyblockdiag!(F, A)
     return cholblockdiag!(F, uplo, α)
 end
 
@@ -104,7 +107,7 @@ end
 #
 function solve_admm!(
         itrwrk::IterationWorkspace{T},
-        M::SSOR{UPLO, T},
+        M::Preconditioner{T},
         F::AbstractMatrix{T},
         x::AbstractVector{T},
         y::AbstractVector{T},
@@ -126,7 +129,7 @@ function solve_admm!(
         iatol::T,
         irtol::T,
         iitmax::Int
-    ) where {UPLO, T}
+    ) where {T}
     m, n = size(B)
 
     @assert length(x) == n
@@ -153,7 +156,10 @@ function solve_admm!(
     #   L = Bᵀ B
     #
     L = LinearOperator(T, n, n, true, true, btb!)
-    niter = itmax
+
+    nouter = itmax
+    ninner = 0
+
     mul!(r, B', g)
 
     for k in 1:itmax
@@ -189,6 +195,7 @@ function solve_admm!(
         #   L z' = Bᵀ g
         #
         it!(itrwrk, L, r, u; M, α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
+        ninner += niter(itrwrk)
         #
         # update u:
         #
@@ -226,12 +233,12 @@ function solve_admm!(
         dtol = atol + rtol * α * norm(u)
 
         if pres ≤ ptol && dres ≤ dtol
-            niter = k
+            nouter = k
             break
         end
     end
 
-    if niter == itmax
+    if nouter == itmax
         @warn "ADMM did not converge in $itmax iterations"
     end
     #
@@ -242,6 +249,7 @@ function solve_admm!(
     copyto!(s, f)
     mul!(s, A, x, -1, 1)
     it!(itrwrk, L, s; M, α=τ, atol=iatol, rtol=irtol, itmax=iitmax)
+    ninner += niter(itrwrk)
     #
     # compute
     #
@@ -249,5 +257,5 @@ function solve_admm!(
     #
     mul!(y, B, solution(itrwrk))
 
-    return niter
+    return ninner
 end

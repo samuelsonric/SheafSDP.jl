@@ -1,15 +1,15 @@
 #
-# Compare ADMM vs Uzawa on ECQP via KKT internals
+# Compare ADMM (with different preconditioners) vs Uzawa on ECQP
 #
 using SheafSDP
 using LinearAlgebra
 using Random
-using BlockSparseArrays: vtxs, colrange, block
+using BlockSparseArrays: vtxs, colrange, block, halfselectvtxs
 
 Random.seed!(42)
 
 # Problem size
-nv = 100
+nv = 500
 dv = 8
 de = 4
 
@@ -48,7 +48,7 @@ println("ECQP size: n=$n, m=$m, nv=$nv vertices, ne=$ne edges")
 println()
 
 # Build block-diagonal SPD Hessian A
-A = SheafSDP.allocate_H(Float64, B)
+A = SheafSDP.allocblockdiag(B)
 for v in vtxs(A)
     Av = block(A, v, v, v)
     d = size(Av, 1)
@@ -68,121 +68,8 @@ end
 f .+= B' * y_true  # f = A x_true + B' y_true
 g = B * x_true      # g = B x_true (feasible!)
 
-# Output vectors
-x_uzw = zeros(n)
-y_uzw = zeros(m)
-x_admm = zeros(n)
-y_admm = zeros(m)
-
-# Uzawa workspace and settings via make_kkt
-uzw_set_warmup = UzawaSettings{Float64}(atol=1e-10, rtol=1e-10, itmax=2000)
-perm_uzw, B_uzw, uzw_wrk = SheafSDP.make_kkt(uzw_set_warmup, B)
-
-# Permute A, f, x for Uzawa (block permutation)
-A_uzw = SheafSDP.selectvtxs(A, perm_uzw)
-f_uzw = SheafSDP.blockpermute(f, B, perm_uzw)
-x_uzw_perm = zeros(n)
-y_uzw_perm = zeros(m)
-
-# Warmup Uzawa
-SheafSDP.init_kkt!(uzw_wrk, uzw_set_warmup, A_uzw)
-SheafSDP.solve_kkt!(uzw_wrk, uzw_set_warmup, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
-
-# Try different augmentation parameters for Uzawa
-println("Uzawa augmentation sweep:")
-for aaug in [1e4, 1e5, 1e6, 1e7, 1e8, 1e9]
-    uzw_set = UzawaSettings{Float64}(aaug=aaug, atol=1e-10, rtol=1e-10, itmax=2000)
-    SheafSDP.init_kkt!(uzw_wrk, uzw_set, A_uzw)
-    fill!(x_uzw_perm, 0); fill!(y_uzw_perm, 0)
-    t = @elapsed niter = SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
-    println("  aaug=$aaug: α=$(round(uzw_wrk.α[], sigdigits=4)), time=$(round(t*1000, digits=2)) ms, iters=$niter")
-end
-println()
-
-uzw_set = UzawaSettings{Float64}(aaug=1e6, atol=1e-10, rtol=1e-10, itmax=2000)
-
-# ADMM workspace and settings via make_kkt
-admm_set_warmup = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-perm_admm, B_admm, admm_wrk = SheafSDP.make_kkt(admm_set_warmup, B)
-
-# For ADMM, perm is identity so no permutation needed
-A_admm = A  # same as original since perm is identity
-f_admm = f
-x_admm_perm = zeros(n)
-y_admm_perm = zeros(m)
-
-# Warmup ADMM
-SheafSDP.init_kkt!(admm_wrk, admm_set_warmup, A_admm)
-SheafSDP.solve_kkt!(admm_wrk, admm_set_warmup, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
-
-# Try different augmentation parameters
-println("ADMM augmentation sweep (relax=1.0):")
-for aaug in [1e5, 5e5, 1e6]
-    admm_set = SheafSDP.ADMMSettings{Float64}(aaug=aaug, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-    SheafSDP.init_kkt!(admm_wrk, admm_set, A_admm)
-    fill!(x_admm_perm, 0); fill!(y_admm_perm, 0)
-    fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
-    t = @elapsed niter = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
-    println("  aaug=$aaug: α=$(round(admm_wrk.α[], sigdigits=4)), time=$(round(t*1000, digits=2)) ms, iters=$niter")
-end
-println()
-
-# Try different relaxation parameters (with default aaug)
-println("ADMM relaxation sweep (aaug=0, raug=1):")
-for relax in [0.5, 0.8, 1.0, 1.2, 1.5, 1.8]
-    admm_set = SheafSDP.ADMMSettings{Float64}(relax=relax, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-    SheafSDP.init_kkt!(admm_wrk, admm_set, A_admm)
-    fill!(x_admm_perm, 0); fill!(y_admm_perm, 0)
-    fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
-    t = @elapsed niter = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
-    println("  relax=$relax: α=$(round(admm_wrk.α[], sigdigits=4)), time=$(round(t*1000, digits=2)) ms, iters=$niter")
-end
-println()
-
-admm_set = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-
-# Initialize both
-SheafSDP.init_kkt!(uzw_wrk, uzw_set, A_uzw)
-SheafSDP.init_kkt!(admm_wrk, admm_set, A_admm)
-
-# Warmup
-SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
-SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
-
-# Reset outputs and ADMM workspace
-fill!(x_uzw_perm, 0); fill!(y_uzw_perm, 0)
-fill!(x_admm_perm, 0); fill!(y_admm_perm, 0)
-fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
-
-# Timed Uzawa
-println("Uzawa:")
-println("  α = $(uzw_wrk.α[])")
-t_uzw = @elapsed niter_uzw = SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
-println("  time:       $(round(t_uzw * 1000, digits=3)) ms")
-println("  iterations: $niter_uzw")
-
-# Timed ADMM
-println()
-println("ADMM:")
-println("  α = $(admm_wrk.α[]), τ = $(admm_wrk.τ[])")
-t_admm = @elapsed niter_admm = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
-println("  time:       $(round(t_admm * 1000, digits=3)) ms")
-println("  iterations: $niter_admm")
-
-# Unpermute Uzawa results for comparison
-SheafSDP.blockinvpermute!(x_uzw, x_uzw_perm, B, perm_uzw)
-copyto!(y_uzw, y_uzw_perm)
-# ADMM results don't need unpermuting (identity perm)
-copyto!(x_admm, x_admm_perm)
-copyto!(y_admm, y_admm_perm)
-
-# Check accuracy
-println()
-println("Accuracy:")
-
-# KKT residuals: A x + Bᵀ y = f, B x = g
+# KKT residuals helper
 function kkt_residuals(A, B, x, y, f, g)
-    # r1 = f - A x - Bᵀ y
     Ax = zeros(length(x))
     for v in vtxs(A)
         rv = colrange(A, v)
@@ -191,31 +78,92 @@ function kkt_residuals(A, B, x, y, f, g)
     end
     Bty = B' * y
     r1 = f - Ax - Bty
-    # r2 = g - B x
     r2 = g - B * x
-    return norm(r1), norm(r2), norm(Ax), norm(Bty)
+    return norm(r1), norm(r2)
 end
 
-println("  ‖x_uzw‖  = $(norm(x_uzw)),  ‖y_uzw‖  = $(norm(y_uzw))")
-println("  ‖x_admm‖ = $(norm(x_admm)), ‖y_admm‖ = $(norm(y_admm))")
+# Test runner
+function test_method(name, set, B, A, f, g)
+    perm, B_perm, wrk = SheafSDP.make_kkt(set, B)
+    A_perm = halfselectvtxs(halfselectvtxs(A, perm), perm)
+    f_perm = SheafSDP.blockpermute(f, B, perm)
+
+    n, m = size(B, 2), size(B, 1)
+    x_perm = zeros(n)
+    y_perm = zeros(m)
+
+    # Warmup
+    SheafSDP.init_kkt!(wrk, set, A_perm)
+    SheafSDP.solve_kkt!(wrk, set, x_perm, y_perm, A_perm, B_perm, f_perm, g)
+
+    # Reset
+    fill!(x_perm, 0); fill!(y_perm, 0)
+    if hasproperty(wrk, :z)
+        fill!(wrk.z, 0); fill!(wrk.u, 0)
+    end
+
+    # Timed run
+    SheafSDP.init_kkt!(wrk, set, A_perm)
+    t = @elapsed niter = SheafSDP.solve_kkt!(wrk, set, x_perm, y_perm, A_perm, B_perm, f_perm, g)
+
+    # Unpermute
+    x = zeros(n)
+    SheafSDP.blockinvpermute!(x, x_perm, B, perm)
+    y = copy(y_perm)
+
+    # Residuals
+    r1, r2 = kkt_residuals(A, B, x, y, f, g)
+
+    return (name=name, time_ms=t*1000, iters=niter, res_primal=r1, res_dual=r2)
+end
+
+println("="^70)
+println("ADMM+IChol raug sweep (with rreg=0)")
+println("="^70)
 println()
 
-r1_uzw, r2_uzw, ax_uzw, bty_uzw = kkt_residuals(A, B, x_uzw, y_uzw, f, g)
-r1_admm, r2_admm, ax_admm, bty_admm = kkt_residuals(A, B, x_admm, y_admm, f, g)
-
-println("  ‖f‖ = $(norm(f)), ‖g‖ = $(norm(g))")
+raugs = [100.0, 500.0, 1000.0, 2000.0, 5000.0]
+println(rpad("raug", 10), rpad("Time(ms)", 12), rpad("Iters", 8))
+for raug in raugs
+    set = ADMMSettings{Float64, ICholSettings{Float64}}(
+        prec=ICholSettings{Float64}(),
+        raug=raug, atol=1e-8, rtol=1e-8, itmax=2000,
+        iatol=1e-10, irtol=1e-10, iitmax=500)
+    r = test_method("IChol", set, B, A, f, g)
+    println(rpad(raug, 10), rpad(round(r.time_ms, digits=1), 12), r.iters)
+end
 println()
-println("  Uzawa:  ‖f - Ax - B'y‖ = $r1_uzw, ‖g - Bx‖ = $r2_uzw")
-println("  ADMM:   ‖f - Ax - B'y‖ = $r1_admm, ‖g - Bx‖ = $r2_admm")
 
-# Solution difference
+println("="^70)
+println("KKT SOLVER COMPARISON (optimal params)")
+println("="^70)
 println()
-println("Agreement:")
-println("  ‖x_uzw - x_admm‖ / ‖x‖ = $(norm(x_uzw - x_admm) / norm(x_admm))")
-println("  ‖y_uzw - y_admm‖ / ‖y‖ = $(norm(y_uzw - y_admm) / norm(y_admm))")
 
-# Summary
+results = []
+
+# Uzawa (raug=5000 was optimal)
+uzw_set = UzawaSettings{Float64}(raug=5000.0, atol=1e-8, rtol=1e-8, itmax=2000)
+push!(results, test_method("Uzawa", uzw_set, B, A, f, g))
+
+# ADMM variants with raug=1000 (optimal for rreg=0)
+for (name, Prec) in [("ADMM+NoPrec", NoPrecSettings{Float64}()),
+                      ("ADMM+Jacobi", JacobiSettings{Float64}()),
+                      ("ADMM+SSOR", SSORSettings{Float64}()),
+                      ("ADMM+IChol", ICholSettings{Float64}())]
+    set = ADMMSettings{Float64, typeof(Prec)}(
+        prec=Prec,
+        raug=1000.0, atol=1e-8, rtol=1e-8, itmax=2000,
+        iatol=1e-10, irtol=1e-10, iitmax=500)
+    push!(results, test_method(name, set, B, A, f, g))
+end
+
+println(rpad("Method", 15), rpad("Time(ms)", 12), rpad("Iters", 8), rpad("‖r_primal‖", 14), "‖r_dual‖")
+println("-"^70)
+for r in results
+    println(rpad(r.name, 15),
+            rpad(round(r.time_ms, digits=1), 12),
+            rpad(r.iters, 8),
+            rpad(round(r.res_primal, sigdigits=3), 14),
+            round(r.res_dual, sigdigits=3))
+end
 println()
-println("Summary:")
-println("  Uzawa: $(round(t_uzw * 1000, digits=2)) ms, $niter_uzw iters")
-println("  ADMM:  $(round(t_admm * 1000, digits=2)) ms, $niter_admm iters")

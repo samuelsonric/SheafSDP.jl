@@ -7,9 +7,30 @@
 # p, d are svec representations of block-diagonal P, D
 #
 
-#
-# solver parameters
-#
+@enum IPMStatus OPTIMAL STALLED NUMERICAL_FAILURE ITERATION_LIMIT
+
+struct IPMProblem{T, I}
+    c::Vector{T}
+    g::Vector{T}
+    B::BlockSparseMatrix{T, I}
+    Q::BlockSparseMatrix{T, I}
+    cones::Vector{Symbol}
+end
+
+function tocone(s::Symbol)
+    if s === :SDP
+        return SDP()
+    elseif s === :POS
+        return POS()
+    elseif s === :SOC
+        return SOC()
+    elseif s === :NOC
+        return NOC()
+    else
+        error("Unknown cone: $s")
+    end
+end
+
 @kwdef struct IPMSettings{T}
     kkt::KKTSettings{T} = UzawaSettings{T}()
     step_frac::T = 0.99
@@ -22,496 +43,380 @@
     step_collapse_threshold::T = 1e-6
 end
 
-#
-# cone degree ν = Σ degree(cone_v, n_v)
-#
-function conedegree(cones::Vector{<:Cone}, B::BlockSparseMatrix)
+const IPMHistoryRow{T} = @NamedTuple{μ::T, τp::T, τd::T, rp::T, rd::T}
+
+struct IPMHistory{T} <: AbstractVector{IPMHistoryRow{T}}
+    μ::Vector{T}
+    τp::Vector{T}
+    τd::Vector{T}
+    rp::Vector{T}
+    rd::Vector{T}
+end
+
+function IPMHistory{T}() where {T}
+    return IPMHistory{T}(T[], T[], T[], T[], T[])
+end
+
+Base.size(h::IPMHistory) = (length(h.μ),)
+
+function Base.getindex(h::IPMHistory, i::Int)
+    return (μ=h.μ[i], τp=h.τp[i], τd=h.τd[i], rp=h.rp[i], rd=h.rd[i])
+end
+
+function Base.push!(h::IPMHistory, row::NamedTuple)
+    push!(h.μ, row.μ)
+    push!(h.τp, row.τp)
+    push!(h.τd, row.τd)
+    push!(h.rp, row.rp)
+    push!(h.rd, row.rd)
+    return h
+end
+
+function printrow(i::Int, row::IPMHistoryRow)
+    println("Iter $i: μ = $(row.μ), ||rp|| = $(row.rp), ||rd|| = $(row.rd)")
+end
+
+struct IPMResult{T}
+    p::Vector{T}
+    d::Vector{T}
+    y::Vector{T}
+    status::IPMStatus
+    iterations::Int
+    history::IPMHistory{T}
+end
+
+mutable struct IPMSolver{T, I, W, Perm}
+    # problem data
+    p::Vector{T}
+    d::Vector{T}
+    y::Vector{T}
+    c::Vector{T}
+    g::Vector{T}
+    B::BlockSparseMatrix{T, I}
+    Q::BlockSparseMatrix{T, I}
+    cones::Vector{<:Cone}
+
+    # permutation
+    P::Perm
+
+    # workspace
+    rp::Vector{T}
+    rd::Vector{T}
+    f::Vector{T}
+    Δpa::Vector{T}
+    Δya::Vector{T}
+    Δda::Vector{T}
+    Δp::Vector{T}
+    Δy::Vector{T}
+    Δd::Vector{T}
+    H::BlockSparseMatrix{T, I}
+    caches::Caches{T, I}
+    wrk::W
+
+    # state
+    hist::IPMHistory{T}
+    iter::Int
+    status::IPMStatus
+    ν::Int
+
+    # settings
+    settings::IPMSettings{T}
+end
+
+function conedegree(cones::AbstractVector, B::BlockSparseMatrix)
     ν = 0
-    for (cone, v) in zip(cones, vtxs(B))
-        ν += degree(cone, ncols(B, v))
+    for v in vtxs(B)
+        ν += degree(cones[v], ncols(B, v))
     end
     return ν
 end
 
-#
-# complementarity measure
-#
-#   μ = ⟨p, d⟩ / ν
-#
-function mu(p::AbstractVector, d::AbstractVector, ν::Integer)
-    return dot(p, d) / ν
-end
-
-#
-# residuals
-#
-#   r_p = g − B p          (primal feasibility)
-#   r_d = c − Bᵀy − d      (dual feasibility)
-#
-function residuals!(rp::AbstractVector, rd::AbstractVector, B, p::AbstractVector, d::AbstractVector, y::AbstractVector, c::AbstractVector, g::AbstractVector, Q)
-    # r_p = g - B p
+function residuals!(rp, rd, B, p, d, y, c, g, Q)
+    #
+    # compute the primal residual:
+    #
+    #   rp = g - B p
+    #
     copyto!(rp, g)
     mul!(rp, B, p, -1, 1)
-
-    # r_d = c + Qp - Bᵀy - d
+    #
+    # compute the dual residual:
+    #
+    #   rd =  c - d + Q p - Bᵀ y
+    #
     copyto!(rd, c)
-    mul!(rd, Symmetric(Q, :L), p, 1, 1)
-    mul!(rd, B', y, -1, 1)
+    mul!(rd, Symmetric(Q, :L), p,  1, 1)
+    mul!(rd,           B',     y, -1, 1)
     axpy!(-1, d, rd)
 
     return rp, rd
 end
 
-#
-# allocate unified cache storage
-#
-function allocate_caches(::Type{T}, ::Type{I}, cones::Vector{<:Cone}, B::BlockSparseMatrix) where {T, I<:Integer}
-    nv = nvtxs(B)
-
-    # Build xcol (same structure as B's colptr)
-    xcol = FVector{I}(undef, nv + 1)
-    xcol[1] = 1
-    for (i, v) in enumerate(vtxs(B))
-        xcol[i + 1] = xcol[i] + ncols(B, v)
-    end
-
-    # Build xblk (colptr into val)
-    xblk = FVector{I}(undef, nv + 1)
-    xblk[1] = 1
-    for (i, (cone, v)) in enumerate(zip(cones, vtxs(B)))
-        n_v = ncols(B, v)
-        xblk[i + 1] = xblk[i] + cachesize(cone, n_v)
-    end
-
-    # Allocate val
-    total_size = xblk[nv + 1] - 1
-    val = FVector{T}(undef, total_size)
-
-    return Caches(val, xcol, xblk)
-end
-
-#
-# allocate block-diagonal Hessian H only
-#
-function allocate_H(::Type{T}, B::BlockSparseMatrix) where {T}
-    nv = nvtxs(B)
-    H_blocks = [zeros(T, ncols(B, v), ncols(B, v)) for v in vtxs(B)]
-    return blocksparse(1:nv, 1:nv, H_blocks, nv, nv)
-end
-
-#
-# assemble block-diagonal Hessian H using cone interface
-#
 function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
-               cones::Vector{<:Cone}, p::AbstractVector{T}, d::AbstractVector{T},
+               cones::AbstractVector, p::AbstractVector{T}, d::AbstractVector{T},
                B::BlockSparseMatrix{T}, Q) where {T}
-    for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
+    for v in vtxs(B)
         r = colrange(B, v)
-        H_v = block(H, v, v, v)
-        c = cache(caches, i, cone)
+        Hv = block(H, v, v, v)
+        cv = cache(caches, v, cones[v])
+        pv = view(p, r)
+        dv = view(d, r)
 
-        p_v = view(p, r)
-        d_v = view(d, r)
-
-        # Update scaling cache
-        scale!(p_v, d_v, c)
-
-        # Compute Hessian block
-        hess!(H_v, p_v, d_v, c)
-
-        # Fold Q_v into H_v
-        axpy!(true, block(Q, v, v, v), H_v)
+        scale!(pv, dv, cv)
+        hess!(Hv, pv, dv, cv)
+        axpy!(true, block(Q, v, v, v), Hv)
     end
+
+    return
 end
 
-#
-# compute Newton step via solve_kkt!
-#
-# The IPM Newton system is:
-#   H Δp − Bᵀ Δy = H r_c − r_d
-#        B Δp    = r_p
-#
-# solve_kkt! solves [A Bᵀ; B 0][x; y] = [f; g]
-# so we set: A = H, x = Δp, y = -Δy, f = (provided), g = r_p
-#
-# After solving, recover Δy = -y and Δd = r_d - Bᵀ Δy + Q Δp
-#
-function newton_step!(
-    Δp::AbstractVector{T},
-    Δy::AbstractVector{T},
-    Δd::AbstractVector{T},
-    kktwrk::KKTWorkspace{T},
-    kktset::KKTSettings{T},
-    H::BlockSparseMatrix{T},
-    B::BlockSparseMatrix{T},
-    f::AbstractVector{T},
-    r_p::AbstractVector{T},
-    r_d::AbstractVector{T},
-    Q
-) where {T}
-    # solve [H Bᵀ; B 0][Δp; w] = [f; r_p] where w = -Δy
-    # assumes F is already factored
-    solve_kkt!(kktwrk, kktset, Δp, Δy, H, B, f, r_p)
-
-    # recover Δy = -w (solve_kkt! returns w in Δy)
+function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q)
+    solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp)
     lmul!(-1, Δy)
 
-    # recover Δd = r_d - Bᵀ Δy + Q Δp
-    copyto!(Δd, r_d)
+    copyto!(Δd, rd)
     mul!(Δd, B', Δy, -1, 1)
     mul!(Δd, Symmetric(Q, :L), Δp, 1, 1)
 
     return
 end
 
-#
-# affine RHS: r_c = -p
-#
-#
-# corrector RHS using cone interface
-#
-function corrector_rhs!(r_c::AbstractVector{T}, caches::Caches{T},
-                        cones::Vector{<:Cone}, p::AbstractVector{T}, d::AbstractVector{T},
-                        Δp::AbstractVector{T}, Δd::AbstractVector{T},
-                        σμ::Real, B::BlockSparseMatrix{T}) where {T}
-    for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
-        r = colrange(B, v)
-        c = cache(caches, i, cone)
-        corr!(view(r_c, r), view(p, r), view(d, r),
-              view(Δp, r), view(Δd, r), σμ, c)
-    end
-    return r_c
-end
-
-#
-# step to boundary using cone interface
-#
-function step_to_boundary(p::AbstractVector{T}, d::AbstractVector{T},
-                          Δp::AbstractVector{T}, Δd::AbstractVector{T},
-                          caches::Caches{T}, cones::Vector{<:Cone},
-                          B::BlockSparseMatrix{T}; step_frac::Real=0.99) where {T}
-    τ_p = one(T)
-    τ_d = one(T)
-
-    for (i, (v, cone)) in enumerate(zip(vtxs(B), cones))
-        r = colrange(B, v)
-        c = cache(caches, i, cone)
-
-        # Step lengths for this block
-        τ_p_v = maxstep(view(p, r), view(Δp, r), true, step_frac, c)
-        τ_d_v = maxstep(view(d, r), view(Δd, r), false, step_frac, c)
-
-        τ_p = min(τ_p, τ_p_v)
-        τ_d = min(τ_d, τ_d_v)
-    end
-
-    return τ_p, τ_d
-end
-
-#
-# initialize iterates for infeasible-start primal-dual IPM
-#
-# Sets P = D = ξ·e (cone identity), y = 0
-# ξ is scaled based on problem data: ξ = max(1, ||c||, ||g||)
-#
-function initialize!(
-    p::AbstractVector{T},
-    d::AbstractVector{T},
-    y::AbstractVector{T},
-    c::AbstractVector{T},
-    g::AbstractVector{T},
-    B::BlockSparseMatrix{T},
-    cones::Vector{<:Cone};
-    ξ::Union{Nothing, Real}=nothing
-) where {T}
-    # Default scaling based on problem data
-    if ξ === nothing
-        ξ = max(one(T), norm(c), norm(g))
-    end
-
-    # y = 0
-    fill!(y, zero(T))
-
-    # P = D = ξ·e for each block (cone identity)
-    for (v, cone) in zip(vtxs(B), cones)
-        r = colrange(B, v)
-        identity!(view(p, r), cone)
-        identity!(view(d, r), cone)
-    end
-    rmul!(p, ξ)
-    rmul!(d, ξ)
-
-    return p, d, y
-end
-
-# Legacy: infer SDP cones from B structure
-function initialize!(
-    p::AbstractVector{T},
-    d::AbstractVector{T},
-    y::AbstractVector{T},
-    c::AbstractVector{T},
-    g::AbstractVector{T},
-    B::BlockSparseMatrix{T};
-    ξ::Union{Nothing, Real}=nothing
-) where {T}
-    # Default scaling based on problem data
-    if ξ === nothing
-        ξ = max(one(T), norm(c), norm(g))
-    end
-
-    # y = 0
-    fill!(y, zero(T))
-
-    # P = D = ξ I for each block
+function corrector!(f, caches, cones, p, d, Δp, Δd, σμ, B)
     for v in vtxs(B)
         r = colrange(B, v)
-        n_v = ncols(B, v)
-        d_v = triroot(n_v)
-
-        # Create ξ I
-        block = ξ * Matrix{T}(I, d_v, d_v)
-
-        # svec into p and d
-        svec!(view(p, r), block)
-        svec!(view(d, r), block)
+        cv = cache(caches, v, cones[v])
+        corr!(view(f, r), view(p, r), view(d, r), view(Δp, r), view(Δd, r), σμ, cv)
     end
 
-    return p, d, y
+    return f
 end
 
-#
-# Result struct for solver diagnostics
-#
-struct SolverResult{T}
-    p::Vector{T}
-    d::Vector{T}
-    y::Vector{T}
-    converged::Bool
-    iterations::Int
-    μ_history::Vector{T}
-    τ_p_history::Vector{T}
-    τ_d_history::Vector{T}
-    rp_history::Vector{T}
-    rd_history::Vector{T}
-    status::Symbol  # :optimal, :itmax, :stalled, :infeasible, :numerical_failure
+function maxsteps(p, d, Δp, Δd, caches, cones, B; frac=0.99)
+    T = eltype(p)
+    τp = one(T)
+    τd = one(T)
+
+    for v in vtxs(B)
+        r = colrange(B, v)
+        cv = cache(caches, v, cones[v])
+        τp = min(τp, maxstep(view(p, r), view(Δp, r), true, frac, cv))
+        τd = min(τd, maxstep(view(d, r), view(Δd, r), false, frac, cv))
+    end
+
+    return τp, τd
 end
 
-#
-# detect stalling: μ not decreasing sufficiently
-#
-function is_stalled(μ_history::Vector{T}; window::Int=5, threshold::Real=0.99) where {T}
-    if length(μ_history) < window + 1
-        return false
-    end
-    # Check if μ decreased by less than (1 - threshold) over the window
-    μ_old = μ_history[end - window]
-    μ_new = μ_history[end]
-    return μ_new > threshold * μ_old
+function inity(B::BlockSparseMatrix{T}) where {T}
+    return zeros(T, size(B, 1))
 end
 
-#
-# detect numerical failure: τ collapsing while residuals plateau
-#
-function is_numerical_failure(
-    τ_p_history::Vector{T},
-    τ_d_history::Vector{T},
-    rp_history::Vector{T},
-    rd_history::Vector{T};
-    window::Int=3,
-    τ_threshold::Real=1e-6,
-    res_threshold::Real=0.9
-) where {T}
-    if length(τ_p_history) < window
+function initp(B::BlockSparseMatrix{T}, cones::AbstractVector) where {T}
+    p = zeros(T, size(B, 2))
+    for v in vtxs(B)
+        identity!(view(p, colrange(B, v)), cones[v])
+    end
+    return p
+end
+
+function initd(B::BlockSparseMatrix, cones::AbstractVector)
+    return initp(B, cones)
+end
+
+function isstalled(hist::IPMHistory; window=5, threshold=0.99)
+    if length(hist.μ) < window + 1
         return false
     end
-    # Check if τ is consistently tiny
-    τ_avg = sum(τ_p_history[end-window+1:end]) / window
-    τ_avg = min(τ_avg, sum(τ_d_history[end-window+1:end]) / window)
-    if τ_avg > τ_threshold
+    return hist.μ[end] > threshold * hist.μ[end - window]
+end
+
+function isnumfail(hist::IPMHistory; window=3, threshold=1e-6)
+    if length(hist.τp) < window
         return false
     end
-    # Check if residuals are not decreasing
-    if length(rp_history) < window + 1
+
+    τavg = sum(hist.τp[end-window+1:end]) / window
+    τavg = min(τavg, sum(hist.τd[end-window+1:end]) / window)
+
+    if τavg > threshold
+        return false
+    end
+
+    if length(hist.rp) < window + 1
         return true
     end
-    rp_old = rp_history[end - window]
-    rp_new = rp_history[end]
-    rd_old = rd_history[end - window]
-    rd_new = rd_history[end]
-    return rp_new > res_threshold * rp_old || rd_new > res_threshold * rd_old
+
+    return hist.rp[end] > 0.9 * hist.rp[end - window] || hist.rd[end] > 0.9 * hist.rd[end - window]
 end
 
-#
-# permute/unpermute vectors according to block permutation
-#
-function blockpermute!(y::AbstractVector, x::AbstractVector, B::BlockSparseMatrix, perm)
-    for (i, v) in enumerate(perm)
-        copyto!(view(y, colrange(B, i)), view(x, colrange(B, v)))
-    end
-    return y
-end
+function init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
+    c0, g, B0, Q0 = prob.c, prob.g, prob.B, prob.Q
+    cones0 = map(tocone, prob.cones)
 
-function blockpermute(x::AbstractVector, B::BlockSparseMatrix, perm)
-    return blockpermute!(similar(x), x, B, perm)
-end
+    kktset = settings.kkt
+    R, P, B, wrk = make_kkt(kktset, B0)
 
-function blockinvpermute!(y::AbstractVector, x::AbstractVector, B::BlockSparseMatrix, perm)
-    for (i, v) in enumerate(perm)
-        copyto!(view(y, colrange(B, v)), view(x, colrange(B, i)))
-    end
-    return y
-end
+    n = size(B0, 2)
+    m = size(B0, 1)
 
-function blockinvpermute(x::AbstractVector, B::BlockSparseMatrix, perm)
-    return blockinvpermute!(similar(x), x, B, perm)
-end
+    y = inity(B0)
 
-#
-# robust solve with diagnostics and failure detection
-#
-function solve!(
-    p::AbstractVector{T},
-    d::AbstractVector{T},
-    y::AbstractVector{T},
-    c::AbstractVector{T},
-    g::AbstractVector{T},
-    B::BlockSparseMatrix{T};
-    Q::BlockSparseMatrix{T},
-    cones::Vector{<:Cone}=[SDP() for _ in vtxs(B)],
-    settings::IPMSettings{T}=IPMSettings{T}()
-) where {T}
-    ipmset = settings
-    kktset = ipmset.kkt
+    p = P * initp(B0, cones0)
+    d = P * initd(B0, cones0)
+    c = P * c0
 
-    # Initialize KKT workspace (handles permutation for Uzawa, identity for ADMM)
-    perm, B_perm, kktwrk = make_kkt(kktset, B)
+    Q = selectvtxs(Q0, R.perm)
+    cones = cones0[R.perm]
 
-    # Permute inputs
-    p_perm = blockpermute(p, B, perm)
-    d_perm = blockpermute(d, B, perm)
-    c_perm = blockpermute(c, B, perm)
-    Q_perm = selectvtxs(Q, perm)
-    cones_perm = [cones[v] for v in perm]
+    ν = conedegree(cones, B)
 
-    n = length(p)
-    m = length(y)
-    ν = conedegree(cones_perm, B_perm)
-
-    r_p = zeros(T, m)
-    r_d = zeros(T, n)
+    rp = zeros(T, m)
+    rd = zeros(T, n)
     f = zeros(T, n)
 
-    # Direction vectors
-    Δp_aff = zeros(T, n)
-    Δy_aff = zeros(T, m)
-    Δd_aff = zeros(T, n)
+    Δpa = zeros(T, n)
+    Δya = zeros(T, m)
+    Δda = zeros(T, n)
     Δp = zeros(T, n)
     Δy = zeros(T, m)
     Δd = zeros(T, n)
 
-    H = allocate_H(T, B_perm)
-    caches = allocate_caches(T, Int, cones_perm, B_perm)
+    H = allocblockdiag(B)
+    caches = Caches(cones, B)
+    hist = IPMHistory{T}()
 
-    # History tracking
-    μ_history = T[]
-    τ_p_history = T[]
-    τ_d_history = T[]
-    rp_history = T[]
-    rd_history = T[]
+    return IPMSolver(
+        p, d, y, c, g, B, Q, cones,
+        P,
+        rp, rd, f, Δpa, Δya, Δda, Δp, Δy, Δd, H, caches, wrk,
+        hist, 0, ITERATION_LIMIT, ν,
+        settings
+    )
+end
 
-    status = :itmax
+function step!(s::IPMSolver{T}) where {T}
+    #
+    # compute the primal and dual residuals:
+    #
+    #   rp = g - B p
+    #   rd = c - d + Q p - Bᵀ y
+    #
+    residuals!(s.rp, s.rd, s.B, s.p, s.d, s.y, s.c, s.g, s.Q)
 
-    for iter in 1:ipmset.itmax
-        # Compute residuals and μ
-        residuals!(r_p, r_d, B_perm, p_perm, d_perm, y, c_perm, g, Q_perm)
-        μ_curr = ν > 0 ? mu(p_perm, d_perm, ν) : zero(T)
-        push!(μ_history, μ_curr)
+    if iszero(s.ν)
+        μ = zero(T)
+    else
+        μ = dot(s.p, s.d) / s.ν
+    end
+    #
+    # check the quantities
+    #
+    #   - ‖rp‖ / (1 + ‖g‖)
+    #   - ‖rd‖ / (1 + ‖c‖)
+    #   - μ
+    #
+    # for convergence
+    #
+    nrp = norm(s.rp) / (1 + norm(s.g))
+    nrd = norm(s.rd) / (1 + norm(s.c))
 
-        # Track residual norms
-        norm_rp = norm(r_p) / (1 + norm(g))
-        norm_rd = norm(r_d) / (1 + norm(c_perm))
-        push!(rp_history, norm_rp)
-        push!(rd_history, norm_rd)
+    if nrp < s.settings.feas_tol && nrd < s.settings.feas_tol && (iszero(s.ν) || μ < s.settings.gap_tol)
+        s.status = OPTIMAL
+        return false
+    end
+    #
+    # compute the sum
+    #
+    #   H = Hf(w) + Q
+    #
+    # where f is the barrier function and
+    # w is the scaling point.
+    #
+    hess!(s.H, s.caches, s.cones, s.p, s.d, s.B, s.Q)
+    init_kkt!(s.wrk, s.settings.kkt, s.H)
+    #
+    # compute the affine direction (Δpa, Δya, Δda)
+    # by solving for Δpa, Δya in
+    #
+    #   [ H  Bᵀ ] [ Δpa ] = [ -d - rd ]
+    #   [ B  0  ] [ Δya ]   [ rp      ]
+    #
+    # and setting Δda to the value
+    #
+    #   Δda = rd - Bᵀ Δya + Q Δpa
+    #
+    axpby!(-1, s.d, 0, s.f)
+    axpby!(-1, s.rd, 1, s.f)
+    newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    #
+    # compute the centering parameter
+    #
+    #   σ ∈ [0, 1]
+    #
+    τpa, τda = maxsteps(s.p, s.d, s.Δpa, s.Δda, s.caches, s.cones, s.B; frac=one(T))
 
-        if ipmset.verbose
-            println("Iter $iter: μ = $μ_curr, ||r_p|| = $norm_rp, ||r_d|| = $norm_rd")
-        end
+    pa = s.p + τpa * s.Δpa
+    da = s.d + τda * s.Δda
+    μa = dot(pa, da) / s.ν
 
-        # Check convergence
-        gap_ok = ν == 0 || μ_curr < ipmset.gap_tol
-        if norm_rp < ipmset.feas_tol && norm_rd < ipmset.feas_tol && gap_ok
-            status = :optimal
-            blockinvpermute!(p, p_perm, B, perm)
-            blockinvpermute!(d, d_perm, B, perm)
-            return SolverResult{T}(
-                copy(p), copy(d), copy(y), true, iter,
-                μ_history, τ_p_history, τ_d_history, rp_history, rd_history,
-                status
-            )
-        end
+    σ = clamp((μa / μ)^3, zero(T), one(T))
+    #
+    # solve for the corrector direction (Δp, Δy, Δd)
+    # by solving for Δp, Δy in
+    #
+    #   [ H  Bᵀ ] [ Δp ] = [ -d - rd + σμ e - Δpa ∘ Δda ]
+    #   [ B  0  ] [ Δy ]   [ rp                         ]
+    #
+    # and setting Δd to the value
+    #
+    #   Δd = rd - Bᵀ Δy + Q Δp
+    #
+    corrector!(s.f, s.caches, s.cones, s.p, s.d, s.Δpa, s.Δda, σ * μ, s.B)
+    axpy!(-1, s.rd, s.f)
+    newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    #
+    # take a step in the direction
+    #
+    #   (Δp, Δy, Δd)
+    #
+    τp, τd = maxsteps(s.p, s.d, s.Δp, s.Δd, s.caches, s.cones, s.B; frac=s.settings.step_frac)
 
-        # Check for stalling
-        if is_stalled(μ_history; window=ipmset.stall_window, threshold=ipmset.stall_threshold)
-            status = :stalled
-            if ipmset.verbose
-                println("Warning: μ stalling detected")
-            end
-        end
+    axpy!(τp, s.Δp, s.p)
+    axpy!(τd, s.Δd, s.d)
+    axpy!(τd, s.Δy, s.y)
 
-        # Assemble H (NT scaling + Hessian) via cone-dispatched interface
-        hess!(H, caches, cones_perm, p_perm, d_perm, B_perm, Q_perm)
+    push!(s.hist, (μ=μ, τp=τp, τd=τd, rp=nrp, rd=nrd))
+    s.iter += 1
 
-        # Factor F = H + α B'B once per iteration
-        init_kkt!(kktwrk, kktset, H)
-
-        # ===== Predictor (affine) step =====
-        # f = H·(-p) - r_d = -d - r_d (by NT property: H·p = d)
-        @. f = -(d_perm + r_d)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, kktwrk, kktset, H, B_perm, f, r_p, r_d, Q_perm)
-
-        # Step to boundary for affine direction
-        τ_p_aff, τ_d_aff = step_to_boundary(p_perm, d_perm, Δp_aff, Δd_aff, caches, cones_perm, B_perm; step_frac=one(T))
-
-        # Compute μ_aff
-        p_aff = p_perm + τ_p_aff * Δp_aff
-        d_aff = d_perm + τ_d_aff * Δd_aff
-        μ_aff = mu(p_aff, d_aff, ν)
-
-        # Adaptive centering parameter
-        σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
-
-        # ===== Corrector step (reuses same factorization) =====
-        corrector_rhs!(f, caches, cones_perm, p_perm, d_perm, Δp_aff, Δd_aff, σ * μ_curr, B_perm)
-        axpy!(-1, r_d, f)
-        newton_step!(Δp, Δy, Δd, kktwrk, kktset, H, B_perm, f, r_p, r_d, Q_perm)
-
-        # Step to boundary
-        τ_p, τ_d = step_to_boundary(p_perm, d_perm, Δp, Δd, caches, cones_perm, B_perm; step_frac=ipmset.step_frac)
-        push!(τ_p_history, τ_p)
-        push!(τ_d_history, τ_d)
-
-        # Check for numerical failure
-        if is_numerical_failure(τ_p_history, τ_d_history, rp_history, rd_history;
-                                 τ_threshold=ipmset.step_collapse_threshold)
-            status = :numerical_failure
-            if ipmset.verbose
-                println("Warning: numerical failure detected (τ collapse + residual plateau)")
-            end
-        end
-
-        # Update iterates
-        axpy!(τ_p, Δp, p_perm)
-        axpy!(τ_d, Δd, d_perm)
-        axpy!(τ_d, Δy, y)
+    if s.settings.verbose
+        printrow(s.iter, s.hist[end])
     end
 
-    # Unpermute results
-    blockinvpermute!(p, p_perm, B, perm)
-    blockinvpermute!(d, d_perm, B, perm)
+    if isstalled(s.hist; window=s.settings.stall_window, threshold=s.settings.stall_threshold)
+        s.status = STALLED
+        if s.settings.verbose
+            println("Warning: μ stalling detected")
+        end
+    end
 
-    return SolverResult{T}(
-        copy(p), copy(d), copy(y), false, ipmset.itmax,
-        μ_history, τ_p_history, τ_d_history, rp_history, rd_history,
-        status
-    )
+    if isnumfail(s.hist; threshold=s.settings.step_collapse_threshold)
+        s.status = NUMERICAL_FAILURE
+        if s.settings.verbose
+            println("Warning: numerical failure detected")
+        end
+    end
+
+    return s.iter < s.settings.itmax
+end
+
+function solve!(s::IPMSolver{T}) where {T}
+    while step!(s) end
+
+    p = s.P \ s.p
+    d = s.P \ s.d
+
+    return IPMResult{T}(p, d, s.y, s.status, s.iter, s.hist)
+end
+
+function solve(prob::IPMProblem, settings::IPMSettings=IPMSettings{eltype(prob.c)}())
+    return solve!(init(prob, settings))
 end

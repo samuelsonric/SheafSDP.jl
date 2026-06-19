@@ -1,4 +1,4 @@
-function wmean(a, b, x, y)
+function weightedmean(a, b, x, y)
     return (a * x + b * y) / (a + b)
 end
 

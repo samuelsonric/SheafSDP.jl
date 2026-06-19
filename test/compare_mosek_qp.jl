@@ -42,7 +42,8 @@ n, m = size(B, 2), size(B, 1)
 
 # Build Q matrix with same block structure as H
 # Use diagonal Q in svec space (each Q_v is diagonal with positive entries)
-H_template = SheafSDP.allocate_H(Float64, B)
+H_template = SheafSDP.allocblockdiag(B)
+fill!(H_template, 0)
 q_diag = zeros(n)  # store diagonal for Mosek comparison
 for v in vtxs(B)
     r = colrange(B, v)
@@ -75,17 +76,19 @@ println()
 
 settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=50000.0), feas_tol=1e-8, gap_tol=1e-7, itmax=200)
 
+# Build problem
+cones = [:SDP for _ in 1:nv]
+prob = IPMProblem(c, g, B, Q, cones)
+
 # Warmup SheafSDP
-p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B; Q, settings)
+solve(prob, settings)
 
 # Solve with our solver
 println("Solving QP with SheafSDP...")
-p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B; Q, settings)
+t1 = @elapsed result = solve(prob, settings)
 obj_sheaf = dot(c, result.p) + 0.5 * dot(result.p, Symmetric(Q, :L) * result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
-println("  converged: $(result.converged)")
+println("  converged: $(result.status == OPTIMAL)")
 println("  objective: $obj_sheaf")
 println()
 

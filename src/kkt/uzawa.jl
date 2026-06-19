@@ -44,10 +44,9 @@ end
 function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
     weights, graph = weightedgraph(B)
 
-    P, Q, S = symbolic(weights, graph)
+    R, P, S = symbolic(weights, graph)
 
-    perm = P.perm
-    B = selectvtxs(B, perm)
+    B = selectvtxs(B, R.perm)
 
     F = FChordalTriangular{:N, :L, T, I}(S)
     L = FChordalTriangular{:N, :L, T, I}(S)
@@ -56,7 +55,7 @@ function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
 
     wrk = UzawaWorkspace(F, L, B)
 
-    return perm, B, wrk
+    return R, P, B, wrk
 end
 
 function init_kkt!(wrk::UzawaWorkspace{UPLO, T}, set::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}

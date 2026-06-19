@@ -10,7 +10,7 @@ using Graphs
 using CliqueTrees: BipartiteGraph, linegraph
 using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, ChordalSymbolic,
                                  ChordalTriangular, FChordalTriangular, triangular, fronts, diagblock, offdblock,
-                                 DivisionWorkspace, FactorizationWorkspace, symbolic
+                                 DivisionWorkspace, FactorizationWorkspace, symbolic, NaturalPermutation
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
 using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nblks, narcs, blocksparse, selectvtxs
@@ -23,8 +23,10 @@ include("kkt/kkt.jl")
 include("ipm.jl")
 
 export sheaf, solve_kkt!, factor_kkt!
-export solve!, initialize!, SolverResult, IPMSettings
+export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus
+export init, step!, solve!, solve
 export Cone, SDP, POS, SOC, NOC
 export KKTSettings, UzawaSettings, ADMMSettings
+export PreconditionerSettings, NoPrecSettings, JacobiSettings, SSORSettings, ICholSettings
 
 end # module SheafSDP

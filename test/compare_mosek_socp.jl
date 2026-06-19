@@ -76,30 +76,30 @@ g = B_sp * p0
 println("SOCP size: n=$n, m=$m, nv=$nv vertices, ne=$ne edges")
 println()
 
-# Cones: all SOC
-cones = [SOC() for _ in 1:nv]
-
 # Q = 0 (no quadratic term)
-Q_obj = SheafSDP.allocate_H(Float64, B)
+Q_obj = SheafSDP.allocblockdiag(B)
+fill!(Q_obj, 0)
+
+# Build problem
+cones = [:SOC for _ in 1:nv]
+prob = IPMProblem(c, g, B, Q_obj, cones)
 
 settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=5000.0), feas_tol=1e-8, gap_tol=1e-8, itmax=200)
 
 # Warmup SheafSDP
-p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B; Q=Q_obj, cones, settings)
+solve(prob, settings)
 
 # Solve with SheafSDP (timed)
 println("Solving SOCP with SheafSDP (SOC cones)...")
-p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B; Q=Q_obj, cones, settings)
+t1 = @elapsed result = solve(prob, settings)
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  objective: $obj_sheaf")
-println("  converged: $(result.converged), status: $(result.status)")
-println("  final μ: $(result.μ_history[end])")
-println("  final rp: $(result.rp_history[end]), rd: $(result.rd_history[end])")
-println("  step sizes (last 10): τ_p=$(round.(result.τ_p_history[end-min(9,length(result.τ_p_history)-1):end], digits=4))")
-println("  μ trajectory (last 10): $(round.(result.μ_history[end-min(9,length(result.μ_history)-1):end], digits=6))")
+println("  status: $(result.status)")
+println("  final μ: $(result.history.μ[end])")
+println("  final rp: $(result.history.rp[end]), rd: $(result.history.rd[end])")
+println("  step sizes (last 10): τp=$(round.(result.history.τp[end-min(9,length(result.history.τp)-1):end], digits=4))")
+println("  μ trajectory (last 10): $(round.(result.history.μ[end-min(9,length(result.history.μ)-1):end], digits=6))")
 println()
 
 # Solve with Mosek

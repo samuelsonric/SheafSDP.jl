@@ -1,4 +1,9 @@
-struct IChol{UPLO, T, I <: Integer} <: AbstractPreconditioner{T}
+@kwdef struct ICholSettings{T} <: PreconditionerSettings{T}
+    areg::T = zero(T)
+    rreg::T = zero(T)
+end
+
+struct IChol{UPLO, T, I <: Integer} <: Preconditioner{T}
     L::BlockSparseMatrix{T, I}
     z::Vector{T}
 end
@@ -38,6 +43,23 @@ end
 
 function IChol(B::BlockSparseMatrix{T}; α::T = one(T)) where {T}
     return IChol{:L}(B; α)
+end
+
+function IChol{UPLO}(B::BlockSparseMatrix{T}, set::ICholSettings{T}) where {UPLO, T}
+    α = set.areg + set.rreg * norm(B)^2
+    return IChol{UPLO}(B; α)
+end
+
+function IChol(B::BlockSparseMatrix{T}, set::ICholSettings{T}) where {T}
+    return IChol{:L}(B, set)
+end
+
+function make_prec(set::ICholSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
+    weights, graph = weightedgraph(B)
+    R, P, S = symbolic(weights, graph)
+    B = selectvtxs(B, R.perm)
+    M = IChol(B, set)
+    return R, P, B, M
 end
 
 function ichol!(L::BlockSparseMatrix{T}, uplo::Val) where {T}

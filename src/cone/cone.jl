@@ -76,9 +76,9 @@ const FMatrixView{T} = ReshapedArray{T, 2, FVectorView{T}, Tuple{}}
 # Unified cache storage
 #
 struct Caches{T, I}
-    val::FVector{T}   # all cache data, flat
     xcol::FVector{I}  # colptr for embdim: xcol[i]:xcol[i+1]-1 gives colrange
     xblk::FVector{I}  # colptr for val: xblk[i]:xblk[i+1]-1 gives cache data for vertex i
+    val::FVector{T}   # all cache data, flat
 end
 
 """
@@ -87,6 +87,27 @@ end
 Return a view-based cache struct for vertex i with the given cone type.
 """
 function cache end
+
+function Caches(cones::AbstractVector, B::BlockSparseMatrix{T, I}) where {T, I}
+    xcol = FVector{I}(undef, nvtxs(B) + one(I))
+    xblk = FVector{I}(undef, nvtxs(B) + one(I))
+
+    c = zero(I)
+    b = zero(I)
+
+    for v in vtxs(B)
+        ncol = ncols(B, v)
+        xcol[v] = c + one(I); c += ncol
+        xblk[v] = b + one(I); b += cachesize(cones[v], ncol)
+    end
+
+    val = FVector{T}(undef, b)
+
+    xcol[nvtxs(B) + one(I)] = c + one(I)
+    xblk[nvtxs(B) + one(I)] = b + one(I)
+
+    return Caches(xcol, xblk, val)
+end
 
 include("sdp.jl")
 include("pos.jl")

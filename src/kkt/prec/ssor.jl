@@ -22,19 +22,43 @@ function SSORWorkspace(B::BlockSparseMatrix{T}; α::T = zero(T)) where {T}
     return SSORWorkspace{:L}(B; α)
 end
 
-struct SSOR{UPLO, T, I <: Integer} <: AbstractPreconditioner{T}
+@kwdef struct SSORSettings{T} <: PreconditionerSettings{T}
+    areg::T = zero(T)
+    rreg::T = zero(T)
+    relax::T = one(T)
+end
+
+struct SSOR{UPLO, T, I <: Integer} <: Preconditioner{T}
     wrk::SSORWorkspace{UPLO, T, I}
+    set::SSORSettings{T}
     B::BlockSparseMatrix{T, I}
-    ω::Scalar{T}
+end
+
+function SSOR{UPLO}(B::BlockSparseMatrix{T, J}, set::SSORSettings{T}) where {UPLO, T, J <: Integer}
+    α = set.areg + set.rreg * norm(B)^2
+    wrk = SSORWorkspace{UPLO}(B; α)
+    return SSOR{UPLO, T, J}(wrk, set, B)
+end
+
+function SSOR(B::BlockSparseMatrix{T}, set::SSORSettings{T}) where {T}
+    return SSOR{:L}(B, set)
 end
 
 function SSOR{UPLO}(B::BlockSparseMatrix{T, J}; α::T = zero(T), ω::T = one(T)) where {UPLO, T, J <: Integer}
+    set = SSORSettings{T}(areg=α, rreg=zero(T), relax=ω)
     wrk = SSORWorkspace{UPLO}(B; α)
-    return SSOR{UPLO, T, J}(wrk, B, fill(ω))
+    return SSOR{UPLO, T, J}(wrk, set, B)
 end
 
 function SSOR(B::BlockSparseMatrix{T}; α::T = zero(T), ω::T = one(T)) where {T}
     return SSOR{:L}(B; α, ω)
+end
+
+function make_prec(set::SSORSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
+    R = NaturalPermutation{I}(nvtxs(B))
+    P = NaturalPermutation{I}(ncols(B))
+    M = SSOR(B, set)
+    return R, P, B, M
 end
 
 function ssor_sweep!(
@@ -120,12 +144,12 @@ function ssor_impl!(
     return z
 end
 
-function ssor!(wrk::SSORWorkspace{UPLO, T}, B::BlockSparseMatrix{T}, r::AbstractVector{T}; ω::T = one(T)) where {UPLO, T}
-    return ssor_impl!(wrk.z, wrk.q, wrk.s, wrk.R, B, r, ω, Val(UPLO))
+function ssor!(wrk::SSORWorkspace{UPLO, T}, B::BlockSparseMatrix{T}, r::AbstractVector{T}, set::SSORSettings{T}) where {UPLO, T}
+    return ssor_impl!(wrk.z, wrk.q, wrk.s, wrk.R, B, r, set.relax, Val(UPLO))
 end
 
 function LinearAlgebra.ldiv!(y::AbstractVector, P::SSOR, x::AbstractVector)
-    ssor!(P.wrk, P.B, x; ω=P.ω[])
+    ssor!(P.wrk, P.B, x, P.set)
     copyto!(y, P.wrk.z)
     return y
 end

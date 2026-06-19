@@ -68,26 +68,26 @@ g = B_sp * p0
 println("LP size: n=$n, m=$m, nv=$nv vertices, ne=$ne edges")
 println()
 
-# Cones: all POS
-cones = [POS() for _ in 1:nv]
-
 # Q = 0 (no quadratic term)
-Q_obj = SheafSDP.allocate_H(Float64, B)
+Q_obj = SheafSDP.allocblockdiag(B)
+fill!(Q_obj, 0)
+
+# Build problem
+cones = [:POS for _ in 1:nv]
+prob = IPMProblem(c, g, B, Q_obj, cones)
 
 settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=1000.0), feas_tol=1e-8, gap_tol=1e-8, itmax=100)
 
 # Warmup SheafSDP
-p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B; Q=Q_obj, cones, settings)
+solve(prob, settings)
 
 # Solve with SheafSDP (timed)
 println("Solving LP with SheafSDP (POS cones)...")
-p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B; Q=Q_obj, cones, settings)
+t1 = @elapsed result = solve(prob, settings)
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  objective: $obj_sheaf")
-println("  converged: $(result.converged)")
+println("  converged: $(result.status == OPTIMAL)")
 println()
 
 # Solve with Mosek

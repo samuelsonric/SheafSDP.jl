@@ -266,7 +266,7 @@ function sdpcorr!(
 
         for i in 1:j - 1
             si = s[i]
-            W[i, j] = W[j, i] = -wmean(si, sj, X[i, j], X[j, i])
+            W[i, j] = W[j, i] = -weightedmean(si, sj, X[i, j], X[j, i])
         end
 
         W[j, j] = σμ - sj^2 - X[j, j]
