@@ -344,7 +344,7 @@ function step!(s::IPMSolver{T}) where {T}
     #
     #   Δda = rd - Bᵀ Δya + Q Δpa
     #
-    axpby!(-1, s.d, 0, s.f)
+    axpby!(-1, s.d,  0, s.f)
     axpby!(-1, s.rd, 1, s.f)
     newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
     #
