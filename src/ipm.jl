@@ -11,14 +11,15 @@
 # solver parameters
 #
 @kwdef struct IPMSettings{T}
-    step_frac::T = 0.99                     # step size damping
-    feas_tol::T = 1e-8                # feasibility tolerance
-    gap_tol::T = 1e-8                   # duality gap tolerance
-    itmax::Int = 100             # max IPM iterations
-    verbose::Bool = false           # verbosity flag
-    stall_window::Int = 5           # stall detection window
-    stall_threshold::T = 0.99       # stall detection threshold
-    τ_collapse_threshold::T = 1e-6  # step collapse threshold
+    kkt::KKTSettings{T} = UzawaSettings{T}()
+    step_frac::T = 0.99
+    feas_tol::T = 1e-8
+    gap_tol::T = 1e-8
+    itmax::Int = 100
+    verbose::Bool = false
+    stall_window::Int = 5
+    stall_threshold::T = 0.99
+    step_collapse_threshold::T = 1e-6
 end
 
 #
@@ -341,12 +342,32 @@ function is_numerical_failure(
 end
 
 #
-# robust solve with diagnostics and failure detection
+# permute/unpermute vectors according to block permutation
 #
-# This is the main user-facing solver that includes:
-# - Automatic initialization if not provided
-# - Failure detection (stalling, numerical issues, possible infeasibility)
-# - Detailed diagnostics
+function blockpermute!(y::AbstractVector, x::AbstractVector, B::BlockSparseMatrix, perm)
+    for (i, v) in enumerate(perm)
+        copyto!(view(y, colrange(B, i)), view(x, colrange(B, v)))
+    end
+    return y
+end
+
+function blockpermute(x::AbstractVector, B::BlockSparseMatrix, perm)
+    return blockpermute!(similar(x), x, B, perm)
+end
+
+function blockinvpermute!(y::AbstractVector, x::AbstractVector, B::BlockSparseMatrix, perm)
+    for (i, v) in enumerate(perm)
+        copyto!(view(y, colrange(B, v)), view(x, colrange(B, i)))
+    end
+    return y
+end
+
+function blockinvpermute(x::AbstractVector, B::BlockSparseMatrix, perm)
+    return blockinvpermute!(similar(x), x, B, perm)
+end
+
+#
+# robust solve with diagnostics and failure detection
 #
 function solve!(
     p::AbstractVector{T},
@@ -354,33 +375,30 @@ function solve!(
     y::AbstractVector{T},
     c::AbstractVector{T},
     g::AbstractVector{T},
-    B::BlockSparseMatrix{T},
-    F::ChordalTriangular{:N, UPLO, T},
-    L::ChordalTriangular{:N, UPLO, T};
+    B::BlockSparseMatrix{T};
     Q::BlockSparseMatrix{T},
     cones::Vector{<:Cone}=[SDP() for _ in vtxs(B)],
-    step_frac::Real=0.99,
-    feas_tol::Real=1e-8,
-    gap_tol::Real=1e-8,
-    itmax::Integer=100,
-    kkt::KKTSettings{T}=UzawaSettings{T}(),
-    verbose::Bool=false,
-    stall_window::Int=5,
-    stall_threshold::Real=0.99,
-    τ_collapse_threshold::Real=1e-6
-) where {UPLO, T}
+    settings::IPMSettings{T}=IPMSettings{T}()
+) where {T}
+    ipmset = settings
+    kktset = ipmset.kkt
+
+    # Initialize KKT workspace (handles permutation for Uzawa, identity for ADMM)
+    perm, B_perm, kktwrk = make_kkt(kktset, B)
+
+    # Permute inputs
+    p_perm = blockpermute(p, B, perm)
+    d_perm = blockpermute(d, B, perm)
+    c_perm = blockpermute(c, B, perm)
+    Q_perm = selectvtxs(Q, perm)
+    cones_perm = [cones[v] for v in perm]
 
     n = length(p)
     m = length(y)
-    ν = conedegree(cones, B)
-
-    ipmset = IPMSettings{T}(; step_frac, feas_tol, gap_tol, itmax,
-                           verbose, stall_window, stall_threshold, τ_collapse_threshold)
-    kktwrk = UzawaWorkspace(F, L, B)
+    ν = conedegree(cones_perm, B_perm)
 
     r_p = zeros(T, m)
     r_d = zeros(T, n)
-    r_c = zeros(T, n)
     f = zeros(T, n)
 
     # Direction vectors
@@ -391,8 +409,8 @@ function solve!(
     Δy = zeros(T, m)
     Δd = zeros(T, n)
 
-    H = allocate_H(T, B)
-    caches = allocate_caches(T, Int, cones, B)
+    H = allocate_H(T, B_perm)
+    caches = allocate_caches(T, Int, cones_perm, B_perm)
 
     # History tracking
     μ_history = T[]
@@ -405,13 +423,13 @@ function solve!(
 
     for iter in 1:ipmset.itmax
         # Compute residuals and μ
-        residuals!(r_p, r_d, B, p, d, y, c, g, Q)
-        μ_curr = ν > 0 ? mu(p, d, ν) : zero(T)
+        residuals!(r_p, r_d, B_perm, p_perm, d_perm, y, c_perm, g, Q_perm)
+        μ_curr = ν > 0 ? mu(p_perm, d_perm, ν) : zero(T)
         push!(μ_history, μ_curr)
 
         # Track residual norms
         norm_rp = norm(r_p) / (1 + norm(g))
-        norm_rd = norm(r_d) / (1 + norm(c))
+        norm_rd = norm(r_d) / (1 + norm(c_perm))
         push!(rp_history, norm_rp)
         push!(rd_history, norm_rd)
 
@@ -423,6 +441,8 @@ function solve!(
         gap_ok = ν == 0 || μ_curr < ipmset.gap_tol
         if norm_rp < ipmset.feas_tol && norm_rd < ipmset.feas_tol && gap_ok
             status = :optimal
+            blockinvpermute!(p, p_perm, B, perm)
+            blockinvpermute!(d, d_perm, B, perm)
             return SolverResult{T}(
                 copy(p), copy(d), copy(y), true, iter,
                 μ_history, τ_p_history, τ_d_history, rp_history, rd_history,
@@ -439,41 +459,40 @@ function solve!(
         end
 
         # Assemble H (NT scaling + Hessian) via cone-dispatched interface
-        hess!(H, caches, cones, p, d, B, Q)
+        hess!(H, caches, cones_perm, p_perm, d_perm, B_perm, Q_perm)
 
         # Factor F = H + α B'B once per iteration
-        init_kkt!(kktwrk, kkt, H)
+        init_kkt!(kktwrk, kktset, H)
 
         # ===== Predictor (affine) step =====
         # f = H·(-p) - r_d = -d - r_d (by NT property: H·p = d)
-        @. f = -(d + r_d)
-        newton_step!(Δp_aff, Δy_aff, Δd_aff, kktwrk, kkt, H, B, f, r_p, r_d, Q)
+        @. f = -(d_perm + r_d)
+        newton_step!(Δp_aff, Δy_aff, Δd_aff, kktwrk, kktset, H, B_perm, f, r_p, r_d, Q_perm)
 
         # Step to boundary for affine direction
-        τ_p_aff, τ_d_aff = step_to_boundary(p, d, Δp_aff, Δd_aff, caches, cones, B; step_frac=one(T))
+        τ_p_aff, τ_d_aff = step_to_boundary(p_perm, d_perm, Δp_aff, Δd_aff, caches, cones_perm, B_perm; step_frac=one(T))
 
         # Compute μ_aff
-        p_aff = p + τ_p_aff * Δp_aff
-        d_aff = d + τ_d_aff * Δd_aff
+        p_aff = p_perm + τ_p_aff * Δp_aff
+        d_aff = d_perm + τ_d_aff * Δd_aff
         μ_aff = mu(p_aff, d_aff, ν)
 
         # Adaptive centering parameter
         σ = clamp((μ_aff / μ_curr)^3, zero(T), one(T))
 
         # ===== Corrector step (reuses same factorization) =====
-        # corrector_rhs! now returns H·r_c directly per block
-        corrector_rhs!(f, caches, cones, p, d, Δp_aff, Δd_aff, σ * μ_curr, B)
+        corrector_rhs!(f, caches, cones_perm, p_perm, d_perm, Δp_aff, Δd_aff, σ * μ_curr, B_perm)
         axpy!(-1, r_d, f)
-        newton_step!(Δp, Δy, Δd, kktwrk, kkt, H, B, f, r_p, r_d, Q)
+        newton_step!(Δp, Δy, Δd, kktwrk, kktset, H, B_perm, f, r_p, r_d, Q_perm)
 
         # Step to boundary
-        τ_p, τ_d = step_to_boundary(p, d, Δp, Δd, caches, cones, B; step_frac=ipmset.step_frac)
+        τ_p, τ_d = step_to_boundary(p_perm, d_perm, Δp, Δd, caches, cones_perm, B_perm; step_frac=ipmset.step_frac)
         push!(τ_p_history, τ_p)
         push!(τ_d_history, τ_d)
 
         # Check for numerical failure
         if is_numerical_failure(τ_p_history, τ_d_history, rp_history, rd_history;
-                                 τ_threshold=ipmset.τ_collapse_threshold)
+                                 τ_threshold=ipmset.step_collapse_threshold)
             status = :numerical_failure
             if ipmset.verbose
                 println("Warning: numerical failure detected (τ collapse + residual plateau)")
@@ -481,10 +500,14 @@ function solve!(
         end
 
         # Update iterates
-        axpy!(τ_p, Δp, p)
-        axpy!(τ_d, Δd, d)
+        axpy!(τ_p, Δp, p_perm)
+        axpy!(τ_d, Δd, d_perm)
         axpy!(τ_d, Δy, y)
     end
+
+    # Unpermute results
+    blockinvpermute!(p, p_perm, B, perm)
+    blockinvpermute!(d, d_perm, B, perm)
 
     return SolverResult{T}(
         copy(p), copy(d), copy(y), false, ipmset.itmax,

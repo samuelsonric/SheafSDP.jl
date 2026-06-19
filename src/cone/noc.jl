@@ -9,11 +9,22 @@ struct NOC <: Cone end
 struct NOCCache <: AbstractCache{NOC}
     cone::NOC
 end
-NOCCache() = NOCCache(NOC())
 
-degree(::NOC, n::Int) = 0
-cachesize(::NOC, n::Int) = 0
-cache(::Caches, ::Int, c::NOC) = NOCCache(c)
+function NOCCache()
+    return NOCCache(NOC())
+end
+
+function degree(::NOC, n::Int)
+    return 0
+end
+
+function cachesize(::NOC, n::Int)
+    return 0
+end
+
+function cache(::Caches, ::Int, c::NOC)
+    return NOCCache(c)
+end
 
 function identity!(x::AbstractVector{T}, ::NOC) where {T}
     fill!(x, zero(T))

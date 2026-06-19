@@ -20,19 +20,19 @@ function SSORWorkspace(B::BlockSparseMatrix)
     return SSORWorkspace{:L}(B)
 end
 
-struct SSORPreconditioner{UPLO, T, I <: Integer}
+struct SSOR{UPLO, T, I <: Integer} <: AbstractPreconditioner{T}
     wrk::SSORWorkspace{UPLO, T, I}
     B::BlockSparseMatrix{T, I}
     ω::Scalar{T}
 end
 
-function SSORPreconditioner{UPLO}(B::BlockSparseMatrix{T, I}; ω::T = one(T)) where {UPLO, T, I <: Integer}
+function SSOR{UPLO}(B::BlockSparseMatrix{T, I}; ω::T = one(T)) where {UPLO, T, I <: Integer}
     wrk = SSORWorkspace{UPLO}(B)
-    return SSORPreconditioner{UPLO, T, I}(wrk, B, fill(ω))
+    return SSOR{UPLO, T, I}(wrk, B, fill(ω))
 end
 
-function SSORPreconditioner(B::BlockSparseMatrix{T, I}; ω::T = one(T)) where {T, I <: Integer}
-    return SSORPreconditioner{:L}(B; ω)
+function SSOR(B::BlockSparseMatrix{T, I}; ω::T = one(T)) where {T, I <: Integer}
+    return SSOR{:L}(B; ω)
 end
 
 function ssor_sweep!(
@@ -122,7 +122,7 @@ function ssor!(wrk::SSORWorkspace{UPLO, T}, B::BlockSparseMatrix{T}, r::Abstract
     return ssor_impl!(wrk.z, wrk.q, wrk.s, wrk.R, B, r, ω, Val(UPLO))
 end
 
-function LinearAlgebra.ldiv!(y::AbstractVector, P::SSORPreconditioner, x::AbstractVector)
+function LinearAlgebra.ldiv!(y::AbstractVector, P::SSOR, x::AbstractVector)
     ssor!(P.wrk, P.B, x; ω=P.ω[])
     copyto!(y, P.wrk.z)
     return y

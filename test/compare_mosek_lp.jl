@@ -40,13 +40,13 @@ ne = length(edges)
 
 # Build restriction maps (random)
 src, dst, maps = Int[], Int[], Matrix{Float64}[]
-for (e_idx, (u, v)) in enumerate(edges)
-    push!(src, u); push!(dst, e_idx); push!(maps, randn(de, dv))
-    push!(src, v); push!(dst, e_idx); push!(maps, randn(de, dv))
+for (u, v) in edges
+    push!(src, u); push!(dst, v); push!(maps, randn(de, dv))
+    push!(src, v); push!(dst, u); push!(maps, randn(de, dv))
 end
 
 # Build sheaf structure
-P, Q, F, L, B = sheaf(src, dst, maps, nv, ne, edges)
+B = sheaf(src, dst, maps)
 B_sp = sparse(B)
 n = size(B_sp, 2)
 m = size(B_sp, 1)
@@ -76,12 +76,12 @@ Q_obj = SheafSDP.allocate_H(Float64, B)
 
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, F, L; Q=Q_obj, cones, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt=UzawaSettings{Float64}(raug=1000.0))
+solve!(p, d, y, c, g, B; Q=Q_obj, cones, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt=UzawaSettings{Float64}(raug=1000.0))
 
 # Solve with SheafSDP (timed)
 println("Solving LP with SheafSDP (POS cones)...")
 p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
+t1 = @elapsed result = solve!(p, d, y, c, g, B;
                                Q=Q_obj, cones, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt=UzawaSettings{Float64}(raug=1000.0))
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")

@@ -13,10 +13,14 @@ struct SOCCache{T} <: AbstractCache{SOC}
 end
 
 # degree = 2 (always, regardless of dimension)
-degree(::SOC, n::Int) = 2
+function degree(::SOC, n::Int)
+    return 2
+end
 
 # cache size: β(1) + w(n)
-cachesize(::SOC, n::Int) = 1 + n
+function cachesize(::SOC, n::Int)
+    return 1 + n
+end
 
 # construct view-based cache from Caches
 function cache(c::Caches{T}, i::Int, cone::SOC) where T

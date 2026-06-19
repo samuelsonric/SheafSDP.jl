@@ -14,7 +14,7 @@ end
 struct ADMMWorkspace{UPLO, T, I <: Integer, ItrWrk <: IterationWorkspace{T}} <: KKTWorkspace{T}
     F::BlockSparseMatrix{T, I}
     itrwrk::ItrWrk
-    M::SSORPreconditioner{UPLO, T, I}
+    M::SSOR{UPLO, T, I}
     z::Vector{T}
     u::Vector{T}
     s::Vector{T}
@@ -29,7 +29,7 @@ function ADMMWorkspace{UPLO}(F::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T,
     m, n = size(B)
     @assert size(F, 1) == n
     itrwrk = CgWorkspace(n, n, Vector{T})
-    M = SSORPreconditioner{UPLO}(B)
+    M = SSOR{UPLO}(B)
     z = zeros(T, n)
     u = zeros(T, n)
     s = zeros(T, n)
@@ -43,6 +43,20 @@ end
 
 function ADMMWorkspace(F::BlockSparseMatrix, B::BlockSparseMatrix)
     return ADMMWorkspace{:L}(F, B)
+end
+
+#
+# Initialize workspace for ADMM method
+#
+# Returns (perm, B, workspace) where:
+# - perm: identity permutation (oneto)
+# - B: unchanged input B
+# - workspace: ADMMWorkspace ready for solve_kkt!
+#
+function make_kkt(::ADMMSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
+    F = allocblockdiag(B)
+    wrk = ADMMWorkspace(F, B)
+    return oneto(nvtxs(B)), B, wrk
 end
 
 function init_kkt!(wrk::ADMMWorkspace{UPLO, T}, set::ADMMSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
@@ -90,7 +104,7 @@ end
 #
 function solve_admm!(
         itrwrk::IterationWorkspace{T},
-        M::SSORPreconditioner{UPLO, T},
+        M::SSOR{UPLO, T},
         F::AbstractMatrix{T},
         x::AbstractVector{T},
         y::AbstractVector{T},

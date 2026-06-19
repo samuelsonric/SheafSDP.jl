@@ -31,14 +31,14 @@ end
 ne = length(edges)
 
 src, dst, maps = Int[], Int[], Matrix{Float64}[]
-for (e_idx, (u, v)) in enumerate(edges)
-    push!(src, u); push!(dst, e_idx); push!(maps, randn(de, dv))
-    push!(src, v); push!(dst, e_idx); push!(maps, randn(de, dv))
+for (u, v) in edges
+    push!(src, u); push!(dst, v); push!(maps, randn(de, dv))
+    push!(src, v); push!(dst, u); push!(maps, randn(de, dv))
 end
 
-P, Q_unused, F, L, B = sheaf(src, dst, maps, nv, ne, edges)
+B = sheaf(src, dst, maps)
 B_sp = sparse(B)
-n, m = size(F, 1), size(B, 1)
+n, m = size(B, 2), size(B, 1)
 
 # Build Q matrix with same block structure as H
 # Use diagonal Q in svec space (each Q_v is diagonal with positive entries)
@@ -62,8 +62,8 @@ p0, d0 = zeros(n), zeros(n)
 for v in vtxs(B)
     r = colrange(B, v)
     d_v = triroot(ncols(B, v))
-    A = randn(d_v, d_v); svec!(view(p0, r), A*A'+I)
-    A = randn(d_v, d_v); svec!(view(d0, r), A*A'+I)
+    A = randn(d_v, d_v); svec!(view(p0, r), A*A'+I(d_v))
+    A = randn(d_v, d_v); svec!(view(d0, r), A*A'+I(d_v))
 end
 
 y0 = randn(m)
@@ -75,12 +75,12 @@ println()
 
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, F, L; Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
+solve!(p, d, y, c, g, B; Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
 
 # Solve with our solver
 println("Solving QP with SheafSDP...")
 p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
+t1 = @elapsed result = solve!(p, d, y, c, g, B;
                                Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
 obj_sheaf = dot(c, result.p) + 0.5 * dot(result.p, Symmetric(Q, :L) * result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")

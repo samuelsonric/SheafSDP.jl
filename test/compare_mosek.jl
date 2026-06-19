@@ -32,22 +32,22 @@ end
 ne = length(edges)
 
 src, dst, maps = Int[], Int[], Matrix{Float64}[]
-for (e_idx, (u, v)) in enumerate(edges)
-    push!(src, u); push!(dst, e_idx); push!(maps, randn(de, dv))
-    push!(src, v); push!(dst, e_idx); push!(maps, randn(de, dv))
+for (u, v) in edges
+    push!(src, u); push!(dst, v); push!(maps, randn(de, dv))
+    push!(src, v); push!(dst, u); push!(maps, randn(de, dv))
 end
 
-P, Q, F, L, B = sheaf(src, dst, maps, nv, ne, edges)
+B = sheaf(src, dst, maps)
 B_sp = sparse(B)
-n, m = size(F, 1), size(B, 1)
+n, m = size(B, 2), size(B, 1)
 
 # Build feasible initial point for our solver
 p0, d0 = zeros(n), zeros(n)
 for v in vtxs(B)
     r = colrange(B, v)
     d_v = triroot(ncols(B, v))
-    A = randn(d_v, d_v); svec!(view(p0, r), A*A'+I)
-    A = randn(d_v, d_v); svec!(view(d0, r), A*A'+I)
+    A = randn(d_v, d_v); svec!(view(p0, r), A*A'+I(d_v))
+    A = randn(d_v, d_v); svec!(view(d0, r), A*A'+I(d_v))
 end
 
 y0 = randn(m)
@@ -60,15 +60,16 @@ Q_obj = SheafSDP.allocate_H(Float64, B)
 println("Problem size: n=$n, m=$m, ne=$ne edges")
 println()
 
+settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=32000.0), feas_tol=1e-8, gap_tol=1e-8, itmax=100)
+
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B, F, L; Q=Q_obj, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt=UzawaSettings{Float64}(raug=32000.0))
+solve!(p, d, y, c, g, B; Q=Q_obj, settings)
 
 # Solve with our solver (timed after warmup)
 println("Solving with SheafSDP...")
 p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B, F, L;
-                               Q=Q_obj, feas_tol=1e-8, gap_tol=1e-8, itmax=100, kkt=UzawaSettings{Float64}(raug=32000.0))
+t1 = @elapsed result = solve!(p, d, y, c, g, B; Q=Q_obj, settings)
 obj_sheaf = dot(c, result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  objective: $obj_sheaf")

@@ -34,13 +34,13 @@ ne = length(edges)
 
 # Build restriction maps
 src, dst, maps = Int[], Int[], Matrix{Float64}[]
-for (e_idx, (u, v)) in enumerate(edges)
-    push!(src, u); push!(dst, e_idx); push!(maps, randn(de, dv))
-    push!(src, v); push!(dst, e_idx); push!(maps, randn(de, dv))
+for (u, v) in edges
+    push!(src, u); push!(dst, v); push!(maps, randn(de, dv))
+    push!(src, v); push!(dst, u); push!(maps, randn(de, dv))
 end
 
 # Build sheaf structure
-P, Q, F_chol, L_chol, B = sheaf(src, dst, maps, nv, ne, edges)
+B = sheaf(src, dst, maps)
 n = size(B, 2)
 m = size(B, 1)
 
@@ -74,44 +74,55 @@ y_uzw = zeros(m)
 x_admm = zeros(n)
 y_admm = zeros(m)
 
-# Uzawa workspace and settings
-uzw_wrk = SheafSDP.UzawaWorkspace(F_chol, L_chol, B)
+# Uzawa workspace and settings via make_kkt
+uzw_set_warmup = UzawaSettings{Float64}(atol=1e-10, rtol=1e-10, itmax=2000)
+perm_uzw, B_uzw, uzw_wrk = SheafSDP.make_kkt(uzw_set_warmup, B)
+
+# Permute A, f, x for Uzawa (block permutation)
+A_uzw = SheafSDP.selectvtxs(A, perm_uzw)
+f_uzw = SheafSDP.blockpermute(f, B, perm_uzw)
+x_uzw_perm = zeros(n)
+y_uzw_perm = zeros(m)
 
 # Warmup Uzawa
-uzw_set_warmup = UzawaSettings{Float64}(atol=1e-10, rtol=1e-10, itmax=2000)
-SheafSDP.init_kkt!(uzw_wrk, uzw_set_warmup, A)
-SheafSDP.solve_kkt!(uzw_wrk, uzw_set_warmup, x_uzw, y_uzw, A, B, f, g)
+SheafSDP.init_kkt!(uzw_wrk, uzw_set_warmup, A_uzw)
+SheafSDP.solve_kkt!(uzw_wrk, uzw_set_warmup, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
 
 # Try different augmentation parameters for Uzawa
 println("Uzawa augmentation sweep:")
 for aaug in [1e4, 1e5, 1e6, 1e7, 1e8, 1e9]
     uzw_set = UzawaSettings{Float64}(aaug=aaug, atol=1e-10, rtol=1e-10, itmax=2000)
-    SheafSDP.init_kkt!(uzw_wrk, uzw_set, A)
-    fill!(x_uzw, 0); fill!(y_uzw, 0)
-    t = @elapsed niter = SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw, y_uzw, A, B, f, g)
+    SheafSDP.init_kkt!(uzw_wrk, uzw_set, A_uzw)
+    fill!(x_uzw_perm, 0); fill!(y_uzw_perm, 0)
+    t = @elapsed niter = SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
     println("  aaug=$aaug: α=$(round(uzw_wrk.α[], sigdigits=4)), time=$(round(t*1000, digits=2)) ms, iters=$niter")
 end
 println()
 
 uzw_set = UzawaSettings{Float64}(aaug=1e6, atol=1e-10, rtol=1e-10, itmax=2000)
 
-# ADMM workspace and settings
-F_admm = SheafSDP.allocate_H(Float64, B)
-admm_wrk = SheafSDP.ADMMWorkspace(F_admm, B)
+# ADMM workspace and settings via make_kkt
+admm_set_warmup = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
+perm_admm, B_admm, admm_wrk = SheafSDP.make_kkt(admm_set_warmup, B)
+
+# For ADMM, perm is identity so no permutation needed
+A_admm = A  # same as original since perm is identity
+f_admm = f
+x_admm_perm = zeros(n)
+y_admm_perm = zeros(m)
 
 # Warmup ADMM
-admm_set_warmup = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-SheafSDP.init_kkt!(admm_wrk, admm_set_warmup, A)
-SheafSDP.solve_kkt!(admm_wrk, admm_set_warmup, x_admm, y_admm, A, B, f, g)
+SheafSDP.init_kkt!(admm_wrk, admm_set_warmup, A_admm)
+SheafSDP.solve_kkt!(admm_wrk, admm_set_warmup, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
 
 # Try different augmentation parameters
 println("ADMM augmentation sweep (relax=1.0):")
 for aaug in [1e5, 5e5, 1e6]
     admm_set = SheafSDP.ADMMSettings{Float64}(aaug=aaug, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-    SheafSDP.init_kkt!(admm_wrk, admm_set, A)
-    fill!(x_admm, 0); fill!(y_admm, 0)
+    SheafSDP.init_kkt!(admm_wrk, admm_set, A_admm)
+    fill!(x_admm_perm, 0); fill!(y_admm_perm, 0)
     fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
-    t = @elapsed niter = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm, y_admm, A, B, f, g)
+    t = @elapsed niter = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
     println("  aaug=$aaug: α=$(round(admm_wrk.α[], sigdigits=4)), time=$(round(t*1000, digits=2)) ms, iters=$niter")
 end
 println()
@@ -120,10 +131,10 @@ println()
 println("ADMM relaxation sweep (aaug=0, raug=1):")
 for relax in [0.5, 0.8, 1.0, 1.2, 1.5, 1.8]
     admm_set = SheafSDP.ADMMSettings{Float64}(relax=relax, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
-    SheafSDP.init_kkt!(admm_wrk, admm_set, A)
-    fill!(x_admm, 0); fill!(y_admm, 0)
+    SheafSDP.init_kkt!(admm_wrk, admm_set, A_admm)
+    fill!(x_admm_perm, 0); fill!(y_admm_perm, 0)
     fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
-    t = @elapsed niter = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm, y_admm, A, B, f, g)
+    t = @elapsed niter = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
     println("  relax=$relax: α=$(round(admm_wrk.α[], sigdigits=4)), time=$(round(t*1000, digits=2)) ms, iters=$niter")
 end
 println()
@@ -131,22 +142,22 @@ println()
 admm_set = SheafSDP.ADMMSettings{Float64}(aaug=2e6, atol=1e-10, rtol=1e-10, itmax=2000, iatol=1e-6, irtol=1e-6, iitmax=500)
 
 # Initialize both
-SheafSDP.init_kkt!(uzw_wrk, uzw_set, A)
-SheafSDP.init_kkt!(admm_wrk, admm_set, A)
+SheafSDP.init_kkt!(uzw_wrk, uzw_set, A_uzw)
+SheafSDP.init_kkt!(admm_wrk, admm_set, A_admm)
 
 # Warmup
-SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw, y_uzw, A, B, f, g)
-SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm, y_admm, A, B, f, g)
+SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
+SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
 
 # Reset outputs and ADMM workspace
-fill!(x_uzw, 0); fill!(y_uzw, 0)
-fill!(x_admm, 0); fill!(y_admm, 0)
+fill!(x_uzw_perm, 0); fill!(y_uzw_perm, 0)
+fill!(x_admm_perm, 0); fill!(y_admm_perm, 0)
 fill!(admm_wrk.z, 0); fill!(admm_wrk.u, 0)
 
 # Timed Uzawa
 println("Uzawa:")
 println("  α = $(uzw_wrk.α[])")
-t_uzw = @elapsed niter_uzw = SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw, y_uzw, A, B, f, g)
+t_uzw = @elapsed niter_uzw = SheafSDP.solve_kkt!(uzw_wrk, uzw_set, x_uzw_perm, y_uzw_perm, A_uzw, B_uzw, f_uzw, g)
 println("  time:       $(round(t_uzw * 1000, digits=3)) ms")
 println("  iterations: $niter_uzw")
 
@@ -154,9 +165,16 @@ println("  iterations: $niter_uzw")
 println()
 println("ADMM:")
 println("  α = $(admm_wrk.α[]), τ = $(admm_wrk.τ[])")
-t_admm = @elapsed niter_admm = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm, y_admm, A, B, f, g)
+t_admm = @elapsed niter_admm = SheafSDP.solve_kkt!(admm_wrk, admm_set, x_admm_perm, y_admm_perm, A_admm, B_admm, f_admm, g)
 println("  time:       $(round(t_admm * 1000, digits=3)) ms")
 println("  iterations: $niter_admm")
+
+# Unpermute Uzawa results for comparison
+SheafSDP.blockinvpermute!(x_uzw, x_uzw_perm, B, perm_uzw)
+copyto!(y_uzw, y_uzw_perm)
+# ADMM results don't need unpermuting (identity perm)
+copyto!(x_admm, x_admm_perm)
+copyto!(y_admm, y_admm_perm)
 
 # Check accuracy
 println()

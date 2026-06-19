@@ -7,11 +7,22 @@ struct POS <: Cone end
 struct POSCache <: AbstractCache{POS}
     cone::POS
 end
-POSCache() = POSCache(POS())
 
-degree(::POS, n::Int) = n
-cachesize(::POS, n::Int) = 0
-cache(::Caches, ::Int, c::POS) = POSCache(c)
+function POSCache()
+    return POSCache(POS())
+end
+
+function degree(::POS, n::Int)
+    return n
+end
+
+function cachesize(::POS, n::Int)
+    return 0
+end
+
+function cache(::Caches, ::Int, c::POS)
+    return POSCache(c)
+end
 
 function identity!(x::AbstractVector{T}, ::POS) where {T}
     fill!(x, one(T))

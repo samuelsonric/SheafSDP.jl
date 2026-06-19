@@ -22,7 +22,7 @@ struct UzawaWorkspace{
     nrm::T
 end
 
-function UzawaWorkspace(F::ChordalTriangular{:N, UPLO, T, I}, L::ChordalTriangular{:N, UPLO, T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
+function UzawaWorkspace(F::FChordalTriangular{:N, UPLO, T, I}, L::FChordalTriangular{:N, UPLO, T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
     m = size(B, 1)
     facwrk = FactorizationWorkspace(F)
     divwrk = DivisionWorkspace(F, 1)
@@ -31,6 +31,32 @@ function UzawaWorkspace(F::ChordalTriangular{:N, UPLO, T, I}, L::ChordalTriangul
     α = ones(T)
     nrm = norm(B)^2
     return UzawaWorkspace(F, L, facwrk, divwrk, itrwrk, r, α, nrm)
+end
+
+#
+# Initialize workspace for Uzawa method
+#
+# Returns (perm, B, workspace) where:
+# - perm: block permutation (use to unpermute results)
+# - B: permuted coboundary matrix
+# - workspace: UzawaWorkspace ready for solve_kkt!
+#
+function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
+    weights, graph = weightedgraph(B)
+
+    P, Q, S = symbolic(weights, graph)
+
+    perm = P.perm
+    B = selectvtxs(B, perm)
+
+    F = FChordalTriangular{:N, :L, T, I}(S)
+    L = FChordalTriangular{:N, :L, T, I}(S)
+
+    copyto!(L, B' * B)
+
+    wrk = UzawaWorkspace(F, L, B)
+
+    return perm, B, wrk
 end
 
 #

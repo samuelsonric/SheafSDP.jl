@@ -17,8 +17,13 @@ end
 #
 
 # triangular number inverse
-triroot(n::Integer) = (isqrt(1 + 8n) - 1) ÷ 2
-roottwo(::Type{T}) where {T} = sqrt(T(2))
+function triroot(n::Integer)
+    return (isqrt(1 + 8n) - 1) ÷ 2
+end
+
+function roottwo(::Type{T}) where {T}
+    return sqrt(T(2))
+end
 
 # symmetrize a matrix by copying lower to upper
 function symmetrize!(M::AbstractMatrix)
@@ -106,70 +111,14 @@ function skron!(H::AbstractMatrix{T}, A::AbstractMatrix{T}) where {T}
     return H
 end
 
-# compute NT scaling factors for a single block via Cholesky + SVD
-#
-# L_P = chol(P),  L_D = chol(D)
-# G = L_Pᵀ L_D
-# SVD: G = U Σ Vᵀ
-#
-# Stores L_P, L_D, U, and Σ (singular values). These define:
-#   R = L_P U Σ^{-1/2}
-#   W = R Rᵀ  (NT scaling, satisfies W D W = P)
-#   W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
-function meanblock!(
-        LP_out::AbstractMatrix{T},
-        LD_out::AbstractMatrix{T},
-        U_out::AbstractMatrix{T},
-        s_out::AbstractVector{T},
-        P::AbstractMatrix{T},
-        D::AbstractMatrix{T}
-    ) where {T}
-    # L_P = chol(P)
-    copyto!(LP_out, P)
-    cholesky!(Symmetric(LP_out, :L))
-    L_P = LowerTriangular(LP_out)
-
-    # L_D = chol(D)
-    copyto!(LD_out, D)
-    cholesky!(Symmetric(LD_out, :L))
-    L_D = LowerTriangular(LD_out)
-
-    # G = L_Pᵀ L_D
-    G = L_P' * L_D
-
-    # SVD: G = U Σ Vᵀ
-    F = svd(G)
-
-    # Store U and singular values
-    copyto!(U_out, F.U)
-    copyto!(s_out, F.S)
-
-    return
-end
-
-# compute H_v = W⁻¹ ⊗ₛ W⁻¹
-# W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹ where W = R R' with R = L_P U Σ^{-1/2}
-function hessblock!(
-        H::AbstractMatrix{T},
-        LP::AbstractMatrix{T},
-        U::AbstractMatrix{T},
-        s::AbstractVector{T}
-    ) where {T}
-    L_P = LowerTriangular(LP)
-
-    # W⁻¹ = L_P⁻ᵀ U Σ U' L_P⁻¹
-    UΣUt = U * Diagonal(s) * U'
-    Winv = L_P' \ UΣUt / L_P
-
-    return skron!(H, Winv)
-end
-
 #
 # SDP cone interface
 #
 
 # degree = triroot(n) where n = d(d+1)/2
-degree(::SDP, n::Int) = triroot(n)
+function degree(::SDP, n::Int)
+    return triroot(n)
+end
 
 # cache size: LP(d²) + LD(d²) + U(d²) + s(d) = 3d² + d
 function cachesize(::SDP, n::Int)
@@ -195,12 +144,14 @@ end
 
 function identity!(x::AbstractVector{T}, ::SDP) where {T}
     d = triroot(length(x))
-    fill!(x, zero(T))
     k = 1
+
+    fill!(x, zero(T))
+
     for j in 1:d
-        x[k] = one(T)
-        k += d - j + 1
+        x[k] = one(T); k += d - j + 1
     end
+
     return x
 end
 
@@ -212,19 +163,65 @@ function sdpscale!(
         p::AbstractVector,
         d::AbstractVector
     ) where {T}
-    d_v = size(LP, 1)
+    n = size(LP, 1)
 
-    P = zeros(T, d_v, d_v)
-    D = zeros(T, d_v, d_v)
-    smat!(P, p)
-    smat!(D, d)
+    V = zeros(T, n, n)
+    work = zeros(T, 1)
+    iwork = zeros(BlasInt, 8n)
 
-    meanblock!(LP, LD, U, s, Symmetric(P, :L), Symmetric(D, :L))
+    smat!(LP, p)
+    smat!(LD, d)
+    #
+    # factorize P:
+    #
+    #   P = LP LPᵀ
+    #
+    cholesky!(Symmetric(LP, :L))
+    #
+    # factorize D:
+    #
+    #   D = LD LDᵀ
+    #
+    cholesky!(Symmetric(LD, :L))
+    #
+    # factorize the product LPᵀ LD
+    #
+    #   LPᵀ LD = U Σ Vᵀ
+    #
+    tril!(LD)
+    mul!(U, LowerTriangular(LP)', LD)
+    svd!(s, U, V, work, iwork)
+
     return
 end
 
 function scale!(p::AbstractVector, d::AbstractVector, cache::SDPCache{T}) where {T}
     sdpscale!(cache.LP, cache.LD, cache.U, cache.s, p, d)
+end
+
+# compute H_v = W⁻¹ ⊗ₛ W⁻¹
+# W⁻¹ = L⁻ᵀ U Σ Uᵀ L⁻¹ where W = R Rᵀ with R = L U Σ^{-1/2}
+function sdphess!(
+        H::AbstractMatrix{T},
+        L::AbstractMatrix{T},
+        U::AbstractMatrix{T},
+        s::AbstractVector{T}
+    ) where {T}
+    n = size(L, 1)
+
+    W = zeros(T, n, n)
+    X = zeros(T, n, n)
+    #
+    # compute the product
+    #
+    #   X = L⁻ᵀ U Σ Uᵀ L⁻¹      
+    #
+    mul!(W, U, Diagonal(s))
+    mul!(X, W, U')
+    ldiv!(LowerTriangular(L)', X)
+    rdiv!(X, LowerTriangular(L))
+
+    return skron!(H, X)
 end
 
 function hess!(
@@ -233,42 +230,55 @@ function hess!(
         ::AbstractVector{T},
         cache::SDPCache{T}
     ) where {T}
-    hessblock!(H, cache.LP, cache.U, cache.s)
+    sdphess!(H, cache.LP, cache.U, cache.s)
     return H
 end
 
-# H·R_c = L_P⁻ᵀ U [σμI - Σ² - Σ B_mat Σ] Uᵀ L_P⁻¹
+# H·R_c = L⁻ᵀ U [σμI - Σ² - Σ B_mat Σ] Uᵀ L⁻¹
 function sdpcorr!(
         r::AbstractVector{T},
-        LP::AbstractMatrix{T},
+        L::AbstractMatrix{T},
         U::AbstractMatrix{T},
         s::AbstractVector{T},
         Δp::AbstractVector{T},
         Δd::AbstractVector{T},
         σμ::Real
     ) where {T}
-    d_v = size(LP, 1)
+    n = size(L, 1)
 
-    ΔP_v = zeros(T, d_v, d_v)
-    ΔD_v = zeros(T, d_v, d_v)
+    ΔP = zeros(T, n, n)
+    ΔD = zeros(T, n, n)
+    W = zeros(T, n, n)
+    X = zeros(T, n, n)
 
-    smat!(ΔP_v, Δp)
-    smat!(ΔD_v, Δd)
+    smat!(ΔP, Δp)
+    smat!(ΔD, Δd)
 
-    L_P = LowerTriangular(LP)
+    mul!(W, Symmetric(ΔD, :L), LowerTriangular(L))
+    mul!(X, Symmetric(ΔP, :L), W)
+    ldiv!(LowerTriangular(L), X)
 
-    X = L_P \ (Symmetric(ΔP_v, :L) * Symmetric(ΔD_v, :L) * L_P)
-    Y = (U' * X * U) ./ s'
-    M = (Y + Y') ./ (s .+ s')
+    mul!(W, U', X)
+    mul!(X, W, U)
 
-    M .*= -(s .* s')
-    for i in 1:d_v
-        M[i,i] += σμ - s[i]^2
+    for j in 1:n
+        sj = s[j]
+
+        for i in 1:j - 1
+            si = s[i]
+            W[i, j] = W[j, i] = -wmean(si, sj, X[i, j], X[j, i])
+        end
+
+        W[j, j] = σμ - sj^2 - X[j, j]
     end
 
-    H_R_c = L_P' \ (U * M * U') / L_P
+    mul!(X, W, U')
+    mul!(W, U, X)
 
-    svec!(r, H_R_c)
+    ldiv!(LowerTriangular(L)', W)
+    rdiv!(W, LowerTriangular(L))
+
+    svec!(r, W)
     return r
 end
 
@@ -281,7 +291,7 @@ function corr!(
         σμ::Real,
         cache::SDPCache{T}
     ) where {T}
-    sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
+    return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
 end
 
 function sdpmaxstep(
@@ -291,7 +301,7 @@ function sdpmaxstep(
         primal::Bool,
         γ::Real
     ) where {T}
-    d_v = size(LP, 1)
+    n = size(LP, 1)
 
     if primal
         L = LowerTriangular(LP)
@@ -299,20 +309,24 @@ function sdpmaxstep(
         L = LowerTriangular(LD)
     end
 
-    ΔX = zeros(T, d_v, d_v)
-    smat!(ΔX, Δx)
+    M = zeros(T, n, n)
+    work = zeros(T, 1)
+    iwork = zeros(BlasInt, 1)
+    #
+    # compute the product
+    #
+    #   M = L⁻¹ ΔX L⁻ᵀ
+    #
+    smat!(M, Δx)
+    symmetrize!(M)
+    ldiv!(L, M)
+    rdiv!(M, L')
+    #
+    # λ is the smallest eigenvalue of M
+    #
+    λ = eigmin!(M, work, iwork)
 
-    # M = L⁻¹ ΔX L⁻ᵀ
-    M = L \ Symmetric(ΔX, :L) / L'
-    M = (M + M') / 2
-
-    λ_min = eigmin(Symmetric(M, :L))
-
-    if λ_min < 0
-        return min(one(T), -γ / λ_min)
-    else
-        return one(T)
-    end
+    return γ / max(γ, -λ)
 end
 
 function maxstep(
@@ -322,5 +336,5 @@ function maxstep(
         γ::Real,
         cache::SDPCache{T}
     ) where {T}
-    sdpmaxstep(cache.LP, cache.LD, Δx, primal, γ)
+    return sdpmaxstep(cache.LP, cache.LD, Δx, primal, γ)
 end
