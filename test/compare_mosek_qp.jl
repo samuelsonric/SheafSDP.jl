@@ -73,15 +73,16 @@ g = B_sp * p0
 println("QP Problem size: n=$n, m=$m, ne=$ne edges")
 println()
 
+settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=50000.0), feas_tol=1e-8, gap_tol=1e-7, itmax=200)
+
 # Warmup SheafSDP
 p, d, y = copy(p0), copy(d0), copy(y0)
-solve!(p, d, y, c, g, B; Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
+solve!(p, d, y, c, g, B; Q, settings)
 
 # Solve with our solver
 println("Solving QP with SheafSDP...")
 p, d, y = copy(p0), copy(d0), copy(y0)
-t1 = @elapsed result = solve!(p, d, y, c, g, B;
-                               Q, feas_tol=1e-8, gap_tol=1e-7, itmax=200, kkt=UzawaSettings{Float64}(raug=50000.0))
+t1 = @elapsed result = solve!(p, d, y, c, g, B; Q, settings)
 obj_sheaf = dot(c, result.p) + 0.5 * dot(result.p, Symmetric(Q, :L) * result.p)
 println("  time: $(round(t1, digits=3))s, iterations: $(result.iterations)")
 println("  converged: $(result.converged)")

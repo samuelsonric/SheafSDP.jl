@@ -2,6 +2,9 @@ function wmean(a, b, x, y)
     return (a * x + b * y) / (a + b)
 end
 
+intriangle(i, j, ::Val{:L}) = i >= j
+intriangle(i, j, ::Val{:U}) = i <= j
+
 function weightedgraph(B::BlockSparseMatrix{T, I}) where {T, I}
     weight = FVector{I}(undef, nvtxs(B))
 
@@ -76,7 +79,7 @@ function congblockdiag(A::BlockSparseMatrix)
     return congblockdiag!(D, A)
 end
 
-function cholblockdiag!(D::BlockSparseMatrix, uplo::Symbol, α::Number)
+function cholblockdiag!(D::BlockSparseMatrix{T}, uplo::Symbol, α::Number=zero(T)) where {T}
     for v in vtxs(D)
         Dv = block(D, v, v, v)
 
@@ -90,9 +93,108 @@ function cholblockdiag!(D::BlockSparseMatrix, uplo::Symbol, α::Number)
     return D
 end
 
-function cholblockdiag(A::BlockSparseMatrix, uplo::Symbol, α::Number)
-    D = congblockdiag(A)
-    return cholblockdiag!(D, uplo, α)
+function lmulblockdiag!(A::BlockSparseMatrix, D::BlockSparseMatrix, uplo::Val{UPLO}, inv::Val{INV}=Val(false)) where {UPLO, INV}
+    for v in vtxs(A)
+        for e in srcrange(A, v)
+            u = A.tgt[e]
+
+            Duu = block(D, u, u, u)
+
+            if UPLO === :L
+                Luu = LowerTriangular(Duu)
+            else
+                Luu = UpperTriangular(Duu)'
+            end
+
+            if INV
+                ldiv!(Luu, block(A, u, v, e))
+            else
+                lmul!(Luu, block(A, u, v, e))
+            end
+        end
+    end
+
+    return A
+end
+
+function rmulblockdiag!(A::BlockSparseMatrix, D::BlockSparseMatrix, uplo::Val{UPLO}, inv::Val{INV}=Val(false)) where {UPLO, INV}
+    for v in vtxs(A)
+        Dvv = block(D, v, v, v)
+
+        if UPLO === :L
+            Lvv = LowerTriangular(Dvv)
+        else
+            Lvv = UpperTriangular(Dvv)'
+        end
+
+        for e in srcrange(A, v)
+            if INV
+                rdiv!(block(A, A.tgt[e], v, e), Lvv')
+            else
+                rmul!(block(A, A.tgt[e], v, e), Lvv)
+            end
+        end
+    end
+
+    return A
+end
+
+function ldivblockdiag!(A, D, uplo)
+    return lmulblockdiag!(A, D, uplo, Val(true))
+end
+
+function rdivblockdiag!(A, D, uplo)
+    return rmulblockdiag!(A, D, uplo, Val(true))
+end
+
+function copyblockdiag(A::BlockSparseMatrix)
+    D = allocblockdiag(A)
+    return copyblockdiag!(D, A)
+end
+
+function copyblockdiag!(D::BlockSparseMatrix, A::BlockSparseMatrix)
+    for v in vtxs(A)
+        for e in srcrange(A, v)
+            u = A.tgt[e]
+
+            if v == u
+                copyto!(block(D, v, v, v), block(A, v, v, e))
+                break
+            end
+        end
+    end
+
+    return D
+end
+
+function copyblockdiag!(L::ChordalTriangular, A::BlockSparseMatrix)
+    fill!(L, false)
+
+    v = 1
+
+    for f in fronts(L)
+        fL, fcol = diagblock(L, f)
+
+        while v ≤ nvtxs(A) && colrange(A, v) ⊆ fcol
+            vcol = colrange(A, v); vA = block(A, v, v, v)
+
+            for j in vcol
+                fj = j - first(fcol) + 1
+                vj = j - first(vcol) + 1
+
+                for i in vcol
+                    fi = i - first(fcol) + 1
+                    vi = i - first(vcol) + 1
+
+                    parent(fL)[fi, fj] = vA[vi, vj]
+                end
+            end
+
+            v += 1
+        end
+    end
+
+    return L
 end
 
 function eigmin!(
@@ -189,6 +291,73 @@ function svd!(
     end
 
     return A, s, VT
+end
+
+function blocktri(A::BlockSparseMatrix{T, I}, uplo::Val{UPLO}) where {T, I, UPLO}
+    narc = zero(I)
+    nblk = zero(I)
+
+    for v in vtxs(A)
+        for e in srcrange(A, v)
+            u = A.tgt[e]
+            if intriangle(u, v, uplo)
+                narc += one(I)
+                nblk += nblks(A, e)
+            end
+        end
+    end
+
+    nout = nvtxs(A)
+    nvtx = nvtxs(A)
+    ncol = ncols(A)
+    nrow = nrows(A)
+
+    L = BlockSparseMatrix{T, I}(nout, nvtx, narc, ncol, nrow, nblk)
+    return blocktri!(L, A, uplo)
+end
+
+function blocktri!(L::BlockSparseMatrix{T, I}, A::BlockSparseMatrix{T, I}, uplo::Val{UPLO}) where {T, I, UPLO}
+    Le = zero(I)
+    Lb = zero(I)
+
+    for v in vtxs(A)
+        L.xsrc[v] = Le + one(I)
+        L.xcol[v] = A.xcol[v]
+        L.xrow[v] = A.xrow[v]
+
+        for Ae in srcrange(A, v)
+            u = A.tgt[Ae]
+
+            if intriangle(u, v, uplo)
+                Le += one(I)
+
+                L.tgt[Le]  = u
+                L.xblk[Le] = Lb + one(I)
+
+                Lb += nblks(A, Ae)
+            end
+        end
+    end
+
+    L.xsrc[nvtxs(L) + one(I)] = narcs(L) + one(I)
+    L.xcol[nvtxs(L) + one(I)] = ncols(A) + one(I)
+    L.xrow[nouts(L) + one(I)] = nrows(A) + one(I)
+    L.xblk[narcs(L) + one(I)] = nblks(L) + one(I)
+
+    for v in vtxs(A)
+        e = L.xsrc[v]
+
+        for Ae in srcrange(A, v)
+            u = A.tgt[Ae]
+
+            if intriangle(u, v, uplo)
+                copyto!(block(L, u, v, e), block(A, u, v, Ae))
+                e += one(I)
+            end
+        end
+    end
+
+    return L
 end
 
 function Base.copyto!(L::ChordalTriangular{DIAG, :L, T, I}, A::BlockSparseMatrix{T}) where {DIAG, T, I}

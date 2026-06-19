@@ -2,13 +2,15 @@ struct Jacobi{UPLO, T, I <: Integer} <: AbstractPreconditioner{T}
     R::BlockSparseMatrix{T, I}
 end
 
-function Jacobi{UPLO}(B::BlockSparseMatrix{T, I}) where {UPLO, T, I}
-    R = cholblockdiag(B, UPLO, false)
-    return Jacobi{UPLO, T, I}(R)
+function Jacobi{UPLO}(B::BlockSparseMatrix{T, J}; α::T = zero(T)) where {UPLO, T, J}
+    R = congblockdiag(B)
+    axpy!(α, I, R)
+    cholblockdiag!(R, UPLO)
+    return Jacobi{UPLO, T, J}(R)
 end
 
-function Jacobi(B::BlockSparseMatrix)
-    return Jacobi{:L}(B)
+function Jacobi(B::BlockSparseMatrix{T}; α::T = zero(T)) where {T}
+    return Jacobi{:L}(B; α)
 end
 
 function LinearAlgebra.ldiv!(y::AbstractVector, P::Jacobi{UPLO}, x::AbstractVector) where {UPLO}

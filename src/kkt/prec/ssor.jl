@@ -5,19 +5,21 @@ struct SSORWorkspace{UPLO, T, I <: Integer}
     s::Vector{T}
 end
 
-function SSORWorkspace{UPLO}(B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
+function SSORWorkspace{UPLO}(B::BlockSparseMatrix{T, J}; α::T = zero(T)) where {UPLO, T, J <: Integer}
     m, n = size(B)
 
-    R = cholblockdiag(B, UPLO, false)
+    R = congblockdiag(B)
+    axpy!(α, I, R)
+    cholblockdiag!(R, UPLO)
     z = zeros(T, n)
     q = zeros(T, m)
     s = zeros(T, maximum(ncols(B, v) for v in vtxs(B)))
 
-    return SSORWorkspace{UPLO, T, I}(R, z, q, s)
+    return SSORWorkspace{UPLO, T, J}(R, z, q, s)
 end
 
-function SSORWorkspace(B::BlockSparseMatrix)
-    return SSORWorkspace{:L}(B)
+function SSORWorkspace(B::BlockSparseMatrix{T}; α::T = zero(T)) where {T}
+    return SSORWorkspace{:L}(B; α)
 end
 
 struct SSOR{UPLO, T, I <: Integer} <: AbstractPreconditioner{T}
@@ -26,13 +28,13 @@ struct SSOR{UPLO, T, I <: Integer} <: AbstractPreconditioner{T}
     ω::Scalar{T}
 end
 
-function SSOR{UPLO}(B::BlockSparseMatrix{T, I}; ω::T = one(T)) where {UPLO, T, I <: Integer}
-    wrk = SSORWorkspace{UPLO}(B)
-    return SSOR{UPLO, T, I}(wrk, B, fill(ω))
+function SSOR{UPLO}(B::BlockSparseMatrix{T, J}; α::T = zero(T), ω::T = one(T)) where {UPLO, T, J <: Integer}
+    wrk = SSORWorkspace{UPLO}(B; α)
+    return SSOR{UPLO, T, J}(wrk, B, fill(ω))
 end
 
-function SSOR(B::BlockSparseMatrix{T, I}; ω::T = one(T)) where {T, I <: Integer}
-    return SSOR{:L}(B; ω)
+function SSOR(B::BlockSparseMatrix{T}; α::T = zero(T), ω::T = one(T)) where {T}
+    return SSOR{:L}(B; α, ω)
 end
 
 function ssor_sweep!(

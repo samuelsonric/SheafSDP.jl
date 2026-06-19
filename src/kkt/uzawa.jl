@@ -59,41 +59,6 @@ function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
     return perm, B, wrk
 end
 
-#
-# copy a block diagonal matrix A into F:
-#
-#   F = A
-#
-function copydia!(L::ChordalTriangular, A::BlockSparseMatrix)
-    fill!(L, false)
-
-    v = 1
-
-    for f in fronts(L)
-        fL, fcol = diagblock(L, f)
-
-        while v ≤ nvtxs(A) && colrange(A, v) ⊆ fcol
-            vcol = colrange(A, v); vA = block(A, v, v, v)
-
-            for j in vcol
-                fj = j - first(fcol) + 1
-                vj = j - first(vcol) + 1
-
-                for i in vcol
-                    fi = i - first(fcol) + 1
-                    vi = i - first(vcol) + 1
-
-                    parent(fL)[fi, fj] = vA[vi, vj]
-                end
-            end
-
-            v += 1
-        end
-    end
-
-    return L
-end
-
 function init_kkt!(wrk::UzawaWorkspace{UPLO, T}, set::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
     α = set.aaug + set.raug * norm(Symmetric(A, :L)) / wrk.nrm
     wrk.α[] = α
@@ -115,7 +80,7 @@ function init_uzw!(
     ) where {UPLO, T}
     @assert size(F, 1) == size(L, 1) == size(A, 1)
 
-    copydia!(F, A)
+    copyblockdiag!(F, A)
     axpby!(α, L, 1, F)
     cholesky!(facwrk, F)
     return F
