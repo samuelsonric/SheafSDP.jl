@@ -2,6 +2,7 @@
 # Compare SheafSDP (POS cones) vs Mosek on an LP
 #
 using SheafSDP
+using CommonSolve: solve
 using SparseArrays
 using LinearAlgebra
 using Random

@@ -1,4 +1,5 @@
 using SheafSDP
+using CommonSolve: solve
 using SparseArrays
 using LinearAlgebra
 using Random

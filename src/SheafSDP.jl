@@ -14,7 +14,10 @@ using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, 
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
 using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nblks, narcs, blocksparse, selectvtxs
+using CommonSolve: init, solve!, solve
 using Base: oneto
+
+import CommonSolve
 
 include("utils.jl")
 include("cone/cone.jl")
@@ -23,8 +26,8 @@ include("kkt/kkt.jl")
 include("ipm.jl")
 
 export sheaf, solve_kkt!, factor_kkt!
-export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus
-export init, step!, solve!, solve
+export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus, OPTIMAL, STALLED, NUMERICAL_FAILURE, ITERATION_LIMIT
+export step!
 export Cone, SDP, POS, SOC, NOC
 export KKTSettings, UzawaSettings, ADMMSettings
 export PreconditionerSettings, NoPrecSettings, JacobiSettings, SSORSettings, ICholSettings

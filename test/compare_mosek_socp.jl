@@ -2,6 +2,7 @@
 # Compare SheafSDP (SOC cones) vs Mosek on a SOCP
 #
 using SheafSDP
+using CommonSolve: solve
 using SparseArrays
 using LinearAlgebra
 using Random

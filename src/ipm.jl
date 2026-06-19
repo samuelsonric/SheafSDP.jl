@@ -248,7 +248,7 @@ function isnumfail(hist::IPMHistory; window=3, threshold=1e-6)
     return hist.rp[end] > 0.9 * hist.rp[end - window] || hist.rd[end] > 0.9 * hist.rd[end - window]
 end
 
-function init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
+function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
     c0, g, B0, Q0 = prob.c, prob.g, prob.B, prob.Q
     cones0 = map(tocone, prob.cones)
 
@@ -393,22 +393,28 @@ function step!(s::IPMSolver{T}) where {T}
 
     if isstalled(s.hist; window=s.settings.stall_window, threshold=s.settings.stall_threshold)
         s.status = STALLED
+
         if s.settings.verbose
             println("Warning: μ stalling detected")
         end
+
+        return false
     end
 
     if isnumfail(s.hist; threshold=s.settings.step_collapse_threshold)
         s.status = NUMERICAL_FAILURE
+
         if s.settings.verbose
             println("Warning: numerical failure detected")
         end
+
+        return false
     end
 
     return s.iter < s.settings.itmax
 end
 
-function solve!(s::IPMSolver{T}) where {T}
+function CommonSolve.solve!(s::IPMSolver{T}) where {T}
     while step!(s) end
 
     p = s.P \ s.p
@@ -417,6 +423,6 @@ function solve!(s::IPMSolver{T}) where {T}
     return IPMResult{T}(p, d, s.y, s.status, s.iter, s.hist)
 end
 
-function solve(prob::IPMProblem, settings::IPMSettings=IPMSettings{eltype(prob.c)}())
+function CommonSolve.solve(prob::IPMProblem, settings::IPMSettings=IPMSettings{eltype(prob.c)}())
     return solve!(init(prob, settings))
 end
