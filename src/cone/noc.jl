@@ -1,8 +1,6 @@
 #
 # NOC cone (no cone / free variables, K = ℝⁿ, K* = {0})
 #
-# Requires Q_v ≻ 0 to supply all curvature in the (1,1) block.
-#
 
 struct NOC <: Cone end
 

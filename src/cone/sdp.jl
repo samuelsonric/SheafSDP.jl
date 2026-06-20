@@ -68,7 +68,7 @@ function smat!(M::AbstractMatrix{T}, v::AbstractVector{T}) where {T}
     return M
 end
 
-# symmetric Kronecker product: H = B ⊗ₛ B (lower triangle)
+# symmetric Kronecker product: H = B ⊗ₛ B (fills full matrix; symmetric iff B is)
 # svec(B X B') = (B ⊗ₛ B) svec(X)
 function skron!(H::AbstractMatrix{T}, A::AbstractMatrix{T}) where {T}
     n = size(A, 1)
@@ -310,6 +310,7 @@ function sdpmaxstep(
     end
 
     M = zeros(T, n, n)
+    W = Vector{T}(undef, n)
     work = zeros(T, 1)
     iwork = zeros(BlasInt, 1)
     #
@@ -324,7 +325,7 @@ function sdpmaxstep(
     #
     # λ is the smallest eigenvalue of M
     #
-    λ = eigmin!(M, work, iwork)
+    λ = eigmin!(M, W, work, iwork)
 
     return γ / max(γ, -λ)
 end

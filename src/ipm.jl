@@ -7,7 +7,7 @@
 # p, d are svec representations of block-diagonal P, D
 #
 
-@enum IPMStatus OPTIMAL STALLED NUMERICAL_FAILURE ITERATION_LIMIT
+@enum IPMStatus OPTIMAL NEAR_OPTIMAL STALLED NUMERICAL_FAILURE ITERATION_LIMIT
 
 struct IPMProblem{T, I}
     c::Vector{T}
@@ -226,11 +226,48 @@ function initd(B::BlockSparseMatrix, cones::AbstractVector)
     return initp(B, cones)
 end
 
-function isstalled(hist::IPMHistory; window=5, threshold=0.99)
-    if length(hist.μ) < window + 1
+function isstalled(hist::IPMHistory; window=5, threshold=0.99, noise_floor=1e-12)
+    n = length(hist.μ)
+    if n < window + 1
         return false
     end
-    return hist.μ[end] > threshold * hist.μ[end - window]
+    # Check if progress is being made on μ, rp, or rd
+    # Ignore "improvements" when values are already at noise floor (machine precision)
+    μ_improved = false
+    rp_improved = false
+    rd_improved = false
+
+    for i in (n-window+1):n
+        if hist.μ[i] < threshold * hist.μ[i-1]
+            μ_improved = true
+        end
+        # Only count residual improvement if not at machine precision noise floor
+        if hist.rp[i-1] > noise_floor && hist.rp[i] < threshold * hist.rp[i-1]
+            rp_improved = true
+        end
+        if hist.rd[i-1] > noise_floor && hist.rd[i] < threshold * hist.rd[i-1]
+            rd_improved = true
+        end
+    end
+
+    # Stall if no measure improved within the window
+    return !μ_improved && !rp_improved && !rd_improved
+end
+
+# Check if solution is "near optimal" - small enough residuals and gap even if stalled
+# Hypatia uses near_factor=1000 by default
+function isnearoptimal(hist::IPMHistory, feas_tol, gap_tol; near_factor=1000.0)
+    if isempty(hist.μ)
+        return false
+    end
+    μ = hist.μ[end]
+    rp = hist.rp[end]
+    rd = hist.rd[end]
+    # Accept if residuals are small and either:
+    # 1. μ is reasonably small (within near_factor of gap_tol), or
+    # 2. Residuals are at machine precision (1e-10), indicating numerical convergence
+    residuals_tiny = rp < 1e-10 && rd < 1e-10
+    return rp < feas_tol && rd < feas_tol && (μ < near_factor * gap_tol || residuals_tiny)
 end
 
 function isnumfail(hist::IPMHistory; window=3, threshold=1e-6)
@@ -398,10 +435,17 @@ function step!(s::IPMSolver{T}) where {T}
     end
 
     if isstalled(s.hist; window=s.settings.stall_window, threshold=s.settings.stall_threshold)
-        s.status = STALLED
-
-        if s.settings.verbose
-            println("Warning: μ stalling detected")
+        # Check if we're "near optimal" - residuals and μ are small enough
+        if isnearoptimal(s.hist, s.settings.feas_tol, s.settings.gap_tol)
+            s.status = NEAR_OPTIMAL
+            if s.settings.verbose
+                println("μ stalling detected but solution is near-optimal; accepting")
+            end
+        else
+            s.status = STALLED
+            if s.settings.verbose
+                println("Warning: μ stalling detected (μ=$(s.hist.μ[end]), rp=$(s.hist.rp[end]), rd=$(s.hist.rd[end]))")
+            end
         end
 
         return false

@@ -26,7 +26,7 @@ include("kkt/kkt.jl")
 include("ipm.jl")
 
 export sheaf, solve_kkt!, factor_kkt!
-export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus, OPTIMAL, STALLED, NUMERICAL_FAILURE, ITERATION_LIMIT
+export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus, OPTIMAL, NEAR_OPTIMAL, STALLED, NUMERICAL_FAILURE, ITERATION_LIMIT
 export step!
 export Cone, SDP, POS, SOC, NOC
 export KKTSettings, UzawaSettings, ADMMSettings

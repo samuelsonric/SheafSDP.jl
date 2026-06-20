@@ -199,17 +199,17 @@ end
 
 function eigmin!(
         A::AbstractMatrix{T},
+        W::Vector{T},
         work::Vector{T},
         iwork::Vector{BlasInt}
     ) where {T <: BlasFloat}
     n = size(A, 1)
 
     @assert size(A, 2) == n
+    @assert length(W) >= n
 
-    require_one_based_indexing(A, work, iwork)
+    require_one_based_indexing(A, W, work, iwork)
     chkstride1(A)
-
-    W = Vector{T}(undef, 1)
     m = Ref{BlasInt}()
     info = Ref{BlasInt}()
     lwork = BlasInt(-1)

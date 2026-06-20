@@ -14,6 +14,7 @@ using LinearAlgebra
 using Random
 using JuMP
 using OSQP
+using MosekTools
 using BlockSparseArrays: vtxs, colrange, rowrange, ncols, blocksparse, block
 
 function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
@@ -30,12 +31,14 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
     edges = [(i, j) for i in 1:N for j in i+1:N]
     ne = length(edges)
 
-    # OSQP reference (elastic-net via epigraph)
-    function solve_osqp()
-        model = Model(OSQP.Optimizer)
+    # Reference solver (elastic-net via epigraph)
+    function solve_reference(optimizer; set_tol=true)
+        model = Model(optimizer)
         set_silent(model)
-        set_optimizer_attribute(model, "eps_abs", 1e-8)
-        set_optimizer_attribute(model, "eps_rel", 1e-8)
+        if set_tol
+            set_optimizer_attribute(model, "eps_abs", 1e-8)
+            set_optimizer_attribute(model, "eps_rel", 1e-8)
+        end
 
         @variable(model, x[1:N, 1:T, 1:nx])
         @variable(model, u[1:N, 1:T-1, 1:nu])
@@ -162,13 +165,13 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
             end
         end
 
-        # Quadratic: Q[u_i^t] = 2R on reified control blocks (objective is ½ p'Qp, so need 2R)
+        # Quadratic: Q[u_i^t] = R on reified control blocks (objective is ½ p'Qp + c'p)
         Q = SheafSDP.allocblockdiag(B)
         fill!(Q, 0)
         for i in 1:N, t in 1:T-1
             Qv = block(Q, col_u(i, t), col_u(i, t), col_u(i, t))
             for k in 1:nu, l in 1:nu
-                Qv[k, l] = 2 * R_cost[k, l]
+                Qv[k, l] = R_cost[k, l]
             end
         end
 
@@ -189,7 +192,10 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
         end
 
         prob = IPMProblem(c, g, B, Q, cones)
-        settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=raug), feas_tol=1e-8, gap_tol=1e-8, itmax=100)
+        settings = IPMSettings{Float64}(
+            kkt=UzawaSettings{Float64}(raug=raug),
+            feas_tol=1e-8, gap_tol=1e-8, itmax=100
+        )
         result = solve(prob, settings)
 
         # Objective: ½ p'Qp + c'p
@@ -198,10 +204,12 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
     end
 
     # Warmup
-    solve_osqp()
+    solve_reference(OSQP.Optimizer)
+    solve_reference(Mosek.Optimizer; set_tol=false)
     solve_sheaf()
 
-    t_osqp = @elapsed obj_osqp = solve_osqp()
+    t_osqp = @elapsed obj_osqp = solve_reference(OSQP.Optimizer)
+    t_mosek = @elapsed obj_mosek = solve_reference(Mosek.Optimizer; set_tol=false)
     t_sheaf = @elapsed (obj_sheaf, iters, status) = solve_sheaf()
 
     return (
@@ -209,10 +217,12 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
         T = T,
         ne = ne,
         t_osqp = t_osqp,
+        t_mosek = t_mosek,
         t_sheaf = t_sheaf,
         iters = iters,
         status = status,
         obj_osqp = obj_osqp,
+        obj_mosek = obj_mosek,
         obj_sheaf = obj_sheaf,
     )
 end
@@ -225,12 +235,12 @@ println("Problem: N agents on complete graph K_N, T timesteps")
 println("Dynamics: planar double integrator (nx=4, nu=2)")
 println("Objective: ½ u'Ru + λ‖u‖₁ (elastic-net)")
 println("Constraints: dynamics + box |u| ≤ 100 + terminal position consensus")
-println("Parameters: raug=1.0, λ=1.0, ε_R=1.0")
+println("Parameters: raug=100.0, λ=1.0, ε_R=1.0")
 println()
 
 results = []
 for (N, T) in [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)]
-    r = run_benchmark(N, T; raug=1.0, λ=1.0, ε_R=1.0)
+    r = run_benchmark(N, T; raug=100.0, λ=1.0, ε_R=1.0)
     push!(results, r)
     if r.status != SheafSDP.OPTIMAL
         println("Warning: N=$(r.N), T=$(r.T) status=$(r.status)")
@@ -238,19 +248,22 @@ for (N, T) in [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)]
 end
 
 # Print table
-println("| N,T | Edges | OSQP | SheafSDP | Iters | Speedup |")
-println("|-----|-------|------|----------|-------|---------|")
+println("| N,T | Edges | OSQP | Mosek | SheafSDP | Iters | vs OSQP | vs Mosek |")
+println("|-----|-------|------|-------|----------|-------|---------|----------|")
 for r in results
     osqp_ms = round(r.t_osqp * 1000, digits=1)
+    mosek_ms = round(r.t_mosek * 1000, digits=1)
     sheaf_ms = round(r.t_sheaf * 1000, digits=1)
-    speedup = round(r.t_osqp / r.t_sheaf, digits=1)
-    println("| $(r.N),$(r.T) | $(r.ne) | $(osqp_ms) ms | $(sheaf_ms) ms | $(r.iters) | $(speedup)x |")
+    vs_osqp = round(r.t_osqp / r.t_sheaf, digits=1)
+    vs_mosek = round(r.t_mosek / r.t_sheaf, digits=1)
+    println("| $(r.N),$(r.T) | $(r.ne) | $(osqp_ms) ms | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.iters) | $(vs_osqp)x | $(vs_mosek)x |")
 end
 println()
 
 # Verify correctness
 println("Correctness check (objective difference):")
 for r in results
-    diff = abs(r.obj_osqp - r.obj_sheaf)
-    println("  N=$(r.N), T=$(r.T): |obj_osqp - obj_sheaf| = $(round(diff, sigdigits=3))")
+    diff_o = abs(r.obj_osqp - r.obj_sheaf)
+    diff_m = abs(r.obj_mosek - r.obj_sheaf)
+    println("  N=$(r.N), T=$(r.T): |OSQP - SheafSDP| = $(round(diff_o, sigdigits=3)), |Mosek - SheafSDP| = $(round(diff_m, sigdigits=3))")
 end

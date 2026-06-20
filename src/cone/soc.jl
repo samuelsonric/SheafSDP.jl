@@ -31,9 +31,10 @@ function cache(c::Caches{T}, i::Int, cone::SOC) where T
 end
 
 function identity!(x::AbstractVector{T}, ::SOC) where {T}
-    # e = (1, 0, ..., 0)
+    # Jordan identity in isometric (scaled) coordinates: ẽ = √2·e
+    # This makes dot(e,e) = 2 = tr(e∘e), so Euclidean dot = trace inner product.
     fill!(x, zero(T))
-    x[1] = one(T)
+    x[1] = sqrt(T(2))
     return x
 end
 
@@ -205,10 +206,12 @@ function soccorr!(
 
     pdet = socdet(p)
 
-    r[1] = σμ * p[1] / pdet - r[1]
+    # Factor of 2 is the scaled Jordan inverse: p̃⁻¹ = 2(p₁,-p̄)/det(p)
+    # This corrects the centering to use the full trace μ, not the half-trace.
+    r[1] = 2σμ * p[1] / pdet - r[1]
 
     for i in 2:n
-        r[i] = -σμ * p[i] / pdet - r[i]
+        r[i] = -2σμ * p[i] / pdet - r[i]
     end
 
     return r
