@@ -13,7 +13,7 @@ using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, 
                                  DivisionWorkspace, FactorizationWorkspace, symbolic, NaturalPermutation
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
-using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nblks, narcs, blocksparse, selectvtxs
+using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nblks, narcs, blocksparse, selectvtxs, halfselectvtxs
 using CommonSolve: init, solve!, solve
 using Base: oneto
 

@@ -16,6 +16,7 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 LinearOperators = "5c8ed15e-5a4c-59e4-a42b-c7e8811fb125"
 Mosek = "6405355b-0ac2-5fba-af84-adbd65488c0e"
 MosekTools = "1ec41992-ff65-5c91-ac43-2df89e9693a4"
+OSQP = "ab2f91bb-94b4-55e3-9ba0-7f65df51de79"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
 [sources]
@@ -34,4 +35,5 @@ LinearAlgebra = "1.12.0"
 LinearOperators = "2.14.1"
 Mosek = "11.2.0"
 MosekTools = "0.15.10"
+OSQP = "0.8.1"
 SparseArrays = "1.12.0"

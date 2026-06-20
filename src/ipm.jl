@@ -264,7 +264,7 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
     d = P * initd(B0, cones0)
     c = P * c0
 
-    Q = selectvtxs(Q0, R.perm)
+    Q = halfselectvtxs(halfselectvtxs(Q0, R.perm), R.perm)
     cones = cones0[R.perm]
 
     ν = conedegree(cones, B)
