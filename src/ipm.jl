@@ -43,7 +43,7 @@ end
     step_collapse_threshold::T = 1e-6
 end
 
-const IPMHistoryRow{T} = @NamedTuple{μ::T, τp::T, τd::T, rp::T, rd::T}
+const IPMHistoryRow{T} = @NamedTuple{μ::T, τp::T, τd::T, rp::T, rd::T, kkt_iters::Int}
 
 struct IPMHistory{T} <: AbstractVector{IPMHistoryRow{T}}
     μ::Vector{T}
@@ -51,16 +51,17 @@ struct IPMHistory{T} <: AbstractVector{IPMHistoryRow{T}}
     τd::Vector{T}
     rp::Vector{T}
     rd::Vector{T}
+    kkt_iters::Vector{Int}
 end
 
 function IPMHistory{T}() where {T}
-    return IPMHistory{T}(T[], T[], T[], T[], T[])
+    return IPMHistory{T}(T[], T[], T[], T[], T[], Int[])
 end
 
 Base.size(h::IPMHistory) = (length(h.μ),)
 
 function Base.getindex(h::IPMHistory, i::Int)
-    return (μ=h.μ[i], τp=h.τp[i], τd=h.τd[i], rp=h.rp[i], rd=h.rd[i])
+    return (μ=h.μ[i], τp=h.τp[i], τd=h.τd[i], rp=h.rp[i], rd=h.rd[i], kkt_iters=h.kkt_iters[i])
 end
 
 function Base.push!(h::IPMHistory, row::NamedTuple)
@@ -69,11 +70,12 @@ function Base.push!(h::IPMHistory, row::NamedTuple)
     push!(h.τd, row.τd)
     push!(h.rp, row.rp)
     push!(h.rd, row.rd)
+    push!(h.kkt_iters, row.kkt_iters)
     return h
 end
 
 function printrow(i::Int, row::IPMHistoryRow)
-    println("Iter $i: μ = $(row.μ), ||rp|| = $(row.rp), ||rd|| = $(row.rd)")
+    println("Iter $i: μ = $(row.μ), ||rp|| = $(row.rp), ||rd|| = $(row.rd), kkt = $(row.kkt_iters)")
 end
 
 struct IPMResult{T}
@@ -82,6 +84,7 @@ struct IPMResult{T}
     y::Vector{T}
     status::IPMStatus
     iterations::Int
+    kkt_iters::Int
     history::IPMHistory{T}
 end
 
@@ -116,6 +119,7 @@ mutable struct IPMSolver{T, I, W, Perm}
     # state
     hist::IPMHistory{T}
     iter::Int
+    kkt_iters::Int
     status::IPMStatus
     ν::Int
 
@@ -171,14 +175,14 @@ function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
 end
 
 function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q)
-    solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp)
+    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp)
     lmul!(-1, Δy)
 
     copyto!(Δd, rd)
     mul!(Δd, B', Δy, -1, 1)
     mul!(Δd, Symmetric(Q, :L), Δp, 1, 1)
 
-    return
+    return kkt_iters
 end
 
 function corrector!(f, caches, cones, p, d, Δp, Δd, σμ, B)
@@ -288,7 +292,7 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
         p, d, y, c, g, B, Q, cones,
         P,
         rp, rd, f, Δpa, Δya, Δda, Δp, Δy, Δd, H, caches, wrk,
-        hist, 0, ITERATION_LIMIT, ν,
+        hist, 0, 0, ITERATION_LIMIT, ν,
         settings
     )
 end
@@ -346,7 +350,7 @@ function step!(s::IPMSolver{T}) where {T}
     #
     axpby!(-1, s.d,  0, s.f)
     axpby!(-1, s.rd, 1, s.f)
-    newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    kkt_iters_aff = newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
     #
     # compute the centering parameter
     #
@@ -372,7 +376,8 @@ function step!(s::IPMSolver{T}) where {T}
     #
     corrector!(s.f, s.caches, s.cones, s.p, s.d, s.Δpa, s.Δda, σ * μ, s.B)
     axpy!(-1, s.rd, s.f)
-    newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    kkt_iters_corr = newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    kkt_iters = kkt_iters_aff + kkt_iters_corr
     #
     # take a step in the direction
     #
@@ -384,8 +389,9 @@ function step!(s::IPMSolver{T}) where {T}
     axpy!(τd, s.Δd, s.d)
     axpy!(τd, s.Δy, s.y)
 
-    push!(s.hist, (μ=μ, τp=τp, τd=τd, rp=nrp, rd=nrd))
+    push!(s.hist, (μ=μ, τp=τp, τd=τd, rp=nrp, rd=nrd, kkt_iters=kkt_iters))
     s.iter += 1
+    s.kkt_iters += kkt_iters
 
     if s.settings.verbose
         printrow(s.iter, s.hist[end])
@@ -420,7 +426,7 @@ function CommonSolve.solve!(s::IPMSolver{T}) where {T}
     p = s.P \ s.p
     d = s.P \ s.d
 
-    return IPMResult{T}(p, d, s.y, s.status, s.iter, s.hist)
+    return IPMResult{T}(p, d, s.y, s.status, s.iter, s.kkt_iters, s.hist)
 end
 
 function CommonSolve.solve(prob::IPMProblem, settings::IPMSettings=IPMSettings{eltype(prob.c)}())
