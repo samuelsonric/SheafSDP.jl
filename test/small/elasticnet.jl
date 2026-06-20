@@ -17,7 +17,7 @@ using OSQP
 using MosekTools
 using BlockSparseArrays: vtxs, colrange, rowrange, ncols, blocksparse, block
 
-function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
+function run_benchmark(N, T; raug=1e6, ū=100.0, λ=1.0, ε_R=1.0)
     Random.seed!(42)
 
     nx = 4; nu = 2; h = 0.1
@@ -45,34 +45,34 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
         @variable(model, t_abs[1:N, 1:T-1, 1:nu] >= 0)  # |u| ≤ t_abs
 
         # Initial conditions
-        for i in 1:N, k in 1:nx
-            @constraint(model, x[i, 1, k] == x0[i][k])
+        for i in 1:N
+            @constraint(model, x[i, 1, :] .== x0[i])
         end
 
         # Dynamics
-        for i in 1:N, t in 1:T-1, k in 1:nx
-            @constraint(model, x[i, t+1, k] == sum(A_dyn[k,j] * x[i,t,j] for j in 1:nx) + sum(B_dyn[k,j] * u[i,t,j] for j in 1:nu))
+        for i in 1:N, t in 1:T-1
+            @constraint(model, x[i, t+1, :] .== A_dyn * x[i, t, :] + B_dyn * u[i, t, :])
         end
 
         # Consensus
-        for (i, j) in edges, k in 1:size(P_proj, 1)
-            @constraint(model, sum(P_proj[k,l] * x[i,T,l] for l in 1:nx) == sum(P_proj[k,l] * x[j,T,l] for l in 1:nx))
+        for (i, j) in edges
+            @constraint(model, P_proj * x[i, T, :] .== P_proj * x[j, T, :])
         end
 
         # Absolute value: -t_abs ≤ u ≤ t_abs
-        for i in 1:N, t in 1:T-1, k in 1:nu
-            @constraint(model, u[i, t, k] <= t_abs[i, t, k])
-            @constraint(model, -u[i, t, k] <= t_abs[i, t, k])
+        for i in 1:N, t in 1:T-1
+            @constraint(model, u[i, t, :] .<= t_abs[i, t, :])
+            @constraint(model, -u[i, t, :] .<= t_abs[i, t, :])
         end
 
         # Box constraint: |u| ≤ ū
-        for i in 1:N, t in 1:T-1, k in 1:nu
-            @constraint(model, t_abs[i, t, k] <= ū)
+        for i in 1:N, t in 1:T-1
+            @constraint(model, t_abs[i, t, :] .<= ū)
         end
 
         # Elastic-net objective: ½ u'Ru + λ‖u‖₁
         @objective(model, Min,
-            sum(sum(R_cost[k,l] * u[i,t,k] * u[i,t,l] for k in 1:nu, l in 1:nu) for i in 1:N, t in 1:T-1) / 2 +
+            sum(0.5 * u[i, t, :]' * R_cost * u[i, t, :] for i in 1:N, t in 1:T-1) +
             λ * sum(t_abs))
 
         optimize!(model)
@@ -200,7 +200,7 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
 
         # Objective: ½ p'Qp + c'p
         obj = 0.5 * dot(result.p, Symmetric(sparse(Q), :L) * result.p) + dot(c, result.p)
-        return obj, result.iterations, result.status
+        return obj, result.iterations, result.kkt_iters, result.status
     end
 
     # Warmup
@@ -210,7 +210,7 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
 
     t_osqp = @elapsed obj_osqp = solve_reference(OSQP.Optimizer)
     t_mosek = @elapsed obj_mosek = solve_reference(Mosek.Optimizer; set_tol=false)
-    t_sheaf = @elapsed (obj_sheaf, iters, status) = solve_sheaf()
+    t_sheaf = @elapsed (obj_sheaf, iters, kkt_iters, status) = solve_sheaf()
 
     return (
         N = N,
@@ -220,6 +220,7 @@ function run_benchmark(N, T; raug=1.0, ū=100.0, λ=1.0, ε_R=1.0)
         t_mosek = t_mosek,
         t_sheaf = t_sheaf,
         iters = iters,
+        kkt_iters = kkt_iters,
         status = status,
         obj_osqp = obj_osqp,
         obj_mosek = obj_mosek,
@@ -235,12 +236,12 @@ println("Problem: N agents on complete graph K_N, T timesteps")
 println("Dynamics: planar double integrator (nx=4, nu=2)")
 println("Objective: ½ u'Ru + λ‖u‖₁ (elastic-net)")
 println("Constraints: dynamics + box |u| ≤ 100 + terminal position consensus")
-println("Parameters: raug=100.0, λ=1.0, ε_R=1.0")
+println("Parameters: raug=1e6, λ=1.0, ε_R=1.0")
 println()
 
 results = []
 for (N, T) in [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)]
-    r = run_benchmark(N, T; raug=100.0, λ=1.0, ε_R=1.0)
+    r = run_benchmark(N, T; raug=1e6, λ=1.0, ε_R=1.0)
     push!(results, r)
     if r.status != SheafSDP.OPTIMAL
         println("Warning: N=$(r.N), T=$(r.T) status=$(r.status)")
@@ -248,15 +249,15 @@ for (N, T) in [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)]
 end
 
 # Print table
-println("| N,T | Edges | OSQP | Mosek | SheafSDP | Iters | vs OSQP | vs Mosek |")
-println("|-----|-------|------|-------|----------|-------|---------|----------|")
+println("| N,T | Edges | OSQP | Mosek | SheafSDP | KKT iters | vs OSQP | vs Mosek |")
+println("|-----|-------|------|-------|----------|-----------|---------|----------|")
 for r in results
     osqp_ms = round(r.t_osqp * 1000, digits=1)
     mosek_ms = round(r.t_mosek * 1000, digits=1)
     sheaf_ms = round(r.t_sheaf * 1000, digits=1)
     vs_osqp = round(r.t_osqp / r.t_sheaf, digits=1)
     vs_mosek = round(r.t_mosek / r.t_sheaf, digits=1)
-    println("| $(r.N),$(r.T) | $(r.ne) | $(osqp_ms) ms | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.iters) | $(vs_osqp)x | $(vs_mosek)x |")
+    println("| $(r.N),$(r.T) | $(r.ne) | $(osqp_ms) ms | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.kkt_iters) | $(vs_osqp)x | $(vs_mosek)x |")
 end
 println()
 

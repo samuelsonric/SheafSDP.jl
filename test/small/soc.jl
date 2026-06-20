@@ -39,28 +39,28 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
         @variable(model, s[1:N, 1:T-1] >= 0)  # epigraph variables
 
         # Initial conditions
-        for i in 1:N, k in 1:nx
-            @constraint(model, x[i, 1, k] == x0[i][k])
+        for i in 1:N
+            @constraint(model, x[i, 1, :] .== x0[i])
         end
 
         # Dynamics
-        for i in 1:N, t in 1:T-1, k in 1:nx
-            @constraint(model, x[i, t+1, k] == sum(A_dyn[k,j] * x[i,t,j] for j in 1:nx) + sum(B_dyn[k,j] * u[i,t,j] for j in 1:nu))
+        for i in 1:N, t in 1:T-1
+            @constraint(model, x[i, t+1, :] .== A_dyn * x[i, t, :] + B_dyn * u[i, t, :])
         end
 
         # Consensus
-        for (i, j) in edges, k in 1:size(P_proj, 1)
-            @constraint(model, sum(P_proj[k,l] * x[i,T,l] for l in 1:nx) == sum(P_proj[k,l] * x[j,T,l] for l in 1:nx))
+        for (i, j) in edges
+            @constraint(model, P_proj * x[i, T, :] .== P_proj * x[j, T, :])
         end
 
         # SOC constraint: ‖u‖₂ ≤ s
         for i in 1:N, t in 1:T-1
-            @constraint(model, [s[i,t]; [u[i,t,k] for k in 1:nu]] in SecondOrderCone())
+            @constraint(model, [s[i,t]; u[i,t,:]] in SecondOrderCone())
         end
 
         # Box constraint on control
-        for i in 1:N, t in 1:T-1, k in 1:nu
-            @constraint(model, -ū <= u[i, t, k] <= ū)
+        for i in 1:N, t in 1:T-1
+            @constraint(model, -ū .<= u[i, t, :] .<= ū)
         end
 
         # Objective: Σ s (sum of norms)
@@ -184,7 +184,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
         )
         result = solve(prob, settings)
 
-        return dot(c, result.p), result.iterations, result.status
+        return dot(c, result.p), result.iterations, result.kkt_iters, result.status
     end
 
     # Warmup
@@ -192,7 +192,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
     solve_sheaf()
 
     t_mosek = @elapsed obj_mosek = solve_mosek()
-    t_sheaf = @elapsed (obj_sheaf, iters, status) = solve_sheaf()
+    t_sheaf = @elapsed (obj_sheaf, iters, kkt_iters, status) = solve_sheaf()
 
     return (
         N = N,
@@ -201,6 +201,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
         t_mosek = t_mosek,
         t_sheaf = t_sheaf,
         iters = iters,
+        kkt_iters = kkt_iters,
         status = status,
         obj_mosek = obj_mosek,
         obj_sheaf = obj_sheaf,
@@ -215,12 +216,12 @@ println("Problem: N agents on complete graph K_N, T timesteps")
 println("Dynamics: planar double integrator (nx=4, nu=2)")
 println("Objective: Σ ‖u‖₂ (sum of norms, group-sparse)")
 println("Constraints: dynamics + box |u| ≤ 100 + terminal position consensus")
-println("Parameters: raug=100.0")
+println("Parameters: raug=1e6")
 println()
 
 results = []
 for (N, T) in [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)]
-    r = run_benchmark(N, T; raug=100.0)
+    r = run_benchmark(N, T; raug=1e6)
     push!(results, r)
     if r.status != SheafSDP.OPTIMAL && r.status != SheafSDP.NEAR_OPTIMAL
         println("Warning: N=$(r.N), T=$(r.T) status=$(r.status)")
@@ -228,13 +229,13 @@ for (N, T) in [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)]
 end
 
 # Print table
-println("| N,T | Edges | Mosek | SheafSDP | Iters | vs Mosek |")
-println("|-----|-------|-------|----------|-------|----------|")
+println("| N,T | Edges | Mosek | SheafSDP | KKT iters | vs Mosek |")
+println("|-----|-------|-------|----------|-----------|----------|")
 for r in results
     mosek_ms = round(r.t_mosek * 1000, digits=1)
     sheaf_ms = round(r.t_sheaf * 1000, digits=1)
     vs_mosek = round(r.t_mosek / r.t_sheaf, digits=1)
-    println("| $(r.N),$(r.T) | $(r.ne) | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.iters) | $(vs_mosek)x |")
+    println("| $(r.N),$(r.T) | $(r.ne) | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.kkt_iters) | $(vs_mosek)x |")
 end
 println()
 

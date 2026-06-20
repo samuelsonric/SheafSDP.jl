@@ -1,3 +1,35 @@
+function two(::Type{T}) where {T}
+    return T(2)
+end
+
+# twosum: s + e = a + b exactly, where s = fl(a+b)
+function twosum(a::T, b::T) where {T}
+    s  = a + b
+    bb = s - a
+    return s, (a - (s - bb)) + (b - bb)
+end
+
+# twoprod: p + e = a * b exactly, where p = fl(a*b)  (requires fma)
+function twoprod(a::T, b::T) where {T}
+    p = a * b
+    return p, fma(a, b, -p)
+end
+
+# cdot: dot(p,d) = Σ p_i d_i, compensated to ~2u
+function cdot(p::AbstractVector{T}, d::AbstractVector{T}) where {T}
+    @assert length(p) == length(d)
+    n = length(p)
+    s = c = zero(T)
+
+    @inbounds for i in 1:n
+        pr, e = twoprod(p[i], d[i])
+        s, e2 = twosum(s, pr)
+        c += e + e2
+    end
+
+    return s + c
+end
+
 function weightedmean(a, b, x, y)
     return (a * x + b * y) / (a + b)
 end

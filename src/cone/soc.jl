@@ -42,15 +42,25 @@ end
 # SOC helper functions
 #
 
-# determinant: det(x) = x₀² - ‖x̄‖²
-function socdet(x::AbstractVector{T}) where {T}
-    n = length(x); d = x[1]^2
+# socdot: xᵀJy = x₀y₀ − Σ_{i≥2} xᵢyᵢ, compensated to ~2u
+function socdot(x::AbstractVector{T}, y::AbstractVector{T}) where {T}
+    @assert length(x) == length(y)
+    n = length(x)
 
-    for i in 2:n
-        d -= x[i]^2
+    s, c = twoprod(x[1], y[1])   # s = x₀y₀, c = error
+
+    @inbounds for i in 2:n
+        p, e = twoprod(x[i], y[i])
+        s, e2 = twosum(s, -p)
+        c += -e + e2
     end
 
-    return d
+    return s + c
+end
+
+# socdet: det(x) = x₀² − ‖x̄‖² = socdot(x, x)
+function socdet(x::AbstractVector)
+    return socdot(x, x)
 end
 
 # SOC multiplication (Jordan product): out = x ∘ y
@@ -123,46 +133,48 @@ end
 
 function socscale!(
         w::AbstractVector{T},
-        β::FScalarView{T},
         p::AbstractVector{T},
         d::AbstractVector{T}
     ) where {T}
-    det_p = socdet(p)
-    det_d = socdet(d)
-    β[] = (det_p / det_d)^(1/4)
-
-    sqrt_det_p = sqrt(det_p)
-    sqrt_det_d = sqrt(det_d)
-
     n = length(p)
-    s_dot_z = dot(p, d) / (sqrt_det_p * sqrt_det_d)
-    sc = sqrt(2 * (1 + s_dot_z))
-    w[1] = (p[1] / sqrt_det_p + d[1] / sqrt_det_d) / sc
+
+    pdet = socdet(p)
+    ddet = socdet(d)
+
+    pdot = cdot(p, d)
+
+    spdet = sqrt(pdet)
+    sddet = sqrt(ddet)
+
+    κ = sqrt(two(T) * (spdet * sddet + pdot))
+    β = sqrt(spdet / sddet)
+
+    w[1] = (p[1] / β + d[1] * β) / κ
+
     for i in 2:n
-        w[i] = (p[i] / sqrt_det_p - d[i] / sqrt_det_d) / sc
+        w[i] = (p[i] / β - d[i] * β) / κ
     end
 
-    return
+    return β
 end
 
 function scale!(p::AbstractVector{T}, d::AbstractVector{T}, cache::SOCCache{T}) where {T}
-    socscale!(cache.w, cache.β, p, d)
+    cache.β[] = socscale!(cache.w, p, d)
 end
 
 function sochess!(H::AbstractMatrix{T}, w::AbstractVector{T}, β::T) where {T}
     n = length(w)
     η = inv(β^2)
-    w1 = w[1]
 
-    H[1, 1] = 2η * w1^2 - η
+    w1 = w[1]; H[1, 1] = 2η * w1^2 - η
 
     for i in 2:n
         H[i, 1] = -2η * w[i] * w1
     end
 
     for j in 2:n
-        wj = w[j]
-        H[j, j] = 2η * wj^2 + η
+        wj = w[j]; H[j, j] = 2η * wj^2 + η
+
         for i in j + 1:n
             H[i, j] = 2η * w[i] * wj
         end

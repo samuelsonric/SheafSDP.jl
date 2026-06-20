@@ -36,16 +36,16 @@ function run_benchmark(N, T; raug=1e9)
         set_optimizer_attribute(model, "eps_rel", 1e-8)
         @variable(model, x[1:N, 1:T, 1:nx])
         @variable(model, u[1:N, 1:T-1, 1:nu])
-        for i in 1:N, k in 1:nx
-            @constraint(model, x[i, 1, k] == x0[i][k])
+        for i in 1:N
+            @constraint(model, x[i, 1, :] .== x0[i])
         end
-        for i in 1:N, t in 1:T-1, k in 1:nx
-            @constraint(model, x[i, t+1, k] == sum(A_dyn[k,j] * x[i,t,j] for j in 1:nx) + sum(B_dyn[k,j] * u[i,t,j] for j in 1:nu))
+        for i in 1:N, t in 1:T-1
+            @constraint(model, x[i, t+1, :] .== A_dyn * x[i, t, :] + B_dyn * u[i, t, :])
         end
-        for (i, j) in edges, k in 1:size(P_proj, 1)
-            @constraint(model, sum(P_proj[k,l] * x[i,T,l] for l in 1:nx) == sum(P_proj[k,l] * x[j,T,l] for l in 1:nx))
+        for (i, j) in edges
+            @constraint(model, P_proj * x[i, T, :] .== P_proj * x[j, T, :])
         end
-        @objective(model, Min, sum(sum(R_cost[k,l] * u[i,t,k] * u[i,t,l] for k in 1:nu, l in 1:nu) for i in 1:N, t in 1:T-1) + ε_reg * sum(x[i,T,k]^2 for i in 1:N, k in 1:nx))
+        @objective(model, Min, sum(u[i, t, :]' * R_cost * u[i, t, :] for i in 1:N, t in 1:T-1) + ε_reg * sum(x[i, T, :]' * x[i, T, :] for i in 1:N))
         optimize!(model)
         return objective_value(model)
     end
@@ -94,14 +94,14 @@ function run_benchmark(N, T; raug=1e9)
         prob = IPMProblem(c, g, B, Q, cones)
         settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=raug), feas_tol=1e-8, gap_tol=1e-8, itmax=100)
         result = solve(prob, settings)
-        return 0.5 * dot(result.p, Symmetric(sparse(Q), :L) * result.p), result.iterations
+        return 0.5 * dot(result.p, Symmetric(sparse(Q), :L) * result.p), result.iterations, result.kkt_iters
     end
 
     # Warmup
     solve_osqp(); solve_sheaf()
 
     t_osqp = @elapsed obj_osqp = solve_osqp()
-    t_sheaf = @elapsed (obj_sheaf, iters) = solve_sheaf()
+    t_sheaf = @elapsed (obj_sheaf, iters, kkt_iters) = solve_sheaf()
 
     return (
         N = N,
@@ -110,6 +110,7 @@ function run_benchmark(N, T; raug=1e9)
         t_osqp = t_osqp,
         t_sheaf = t_sheaf,
         iters = iters,
+        kkt_iters = kkt_iters,
         obj_osqp = obj_osqp,
         obj_sheaf = obj_sheaf,
     )
@@ -132,14 +133,14 @@ for (N, T) in [(20, 20), (30, 30), (40, 40), (50, 50), (60, 60), (70, 70)]
 end
 
 # Print table
-println("| N,T | Edges | OSQP | SheafSDP | Speedup |")
-println("|-----|-------|------|----------|---------|")
+println("| N,T | Edges | OSQP | SheafSDP | KKT iters | Speedup |")
+println("|-----|-------|------|----------|-----------|---------|")
 for r in results
     speedup = r.t_osqp / r.t_sheaf
     osqp_ms = round(r.t_osqp * 1000, digits=1)
     sheaf_ms = round(r.t_sheaf * 1000, digits=1)
     speedup_str = round(speedup, digits=1)
-    println("| $(r.N),$(r.T) | $(r.ne) | $(osqp_ms) ms | $(sheaf_ms) ms | $(speedup_str)x |")
+    println("| $(r.N),$(r.T) | $(r.ne) | $(osqp_ms) ms | $(sheaf_ms) ms | $(r.kkt_iters) | $(speedup_str)x |")
 end
 println()
 

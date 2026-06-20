@@ -189,6 +189,14 @@ function solve_uzw!(
     mul!(x, B', r, -1, 1)
     ldiv!(divwrk, F, x)
     ldiv!(divwrk, F', x)
+    #
+    # update y:
+    #
+    #   y = r - α B x
+    #
+    copyto!(r, g)
+    mul!(r, B, x, -1, 1)
+    axpy!(-α, r, y)
 
     return niter(itrwrk)
 end
