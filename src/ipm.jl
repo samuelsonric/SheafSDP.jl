@@ -41,6 +41,9 @@ end
     stall_window::Int = 5
     stall_threshold::T = 0.99
     step_collapse_threshold::T = 1e-6
+    refine_itmax::Int = 10
+    refine_atol::T = 1e-12
+    refine_rtol::T = 1e-13
 end
 
 const IPMHistoryRow{T} = @NamedTuple{μ::T, τp::T, τd::T, rp::T, rd::T, kkt_iters::Int}
@@ -115,6 +118,11 @@ mutable struct IPMSolver{T, I, W, Perm}
     H::BlockSparseMatrix{T, I}
     caches::Caches{T, I}
     wrk::W
+    # refinement workspace
+    sp::Vector{T}
+    sy::Vector{T}
+    dp::Vector{T}
+    dy::Vector{T}
 
     # state
     hist::IPMHistory{T}
@@ -174,8 +182,15 @@ function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
     return
 end
 
-function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q)
+function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q, sp, sy, dp, dy;
+                 refine::Bool=false, refine_itmax::Int=10, refine_atol=1e-12, refine_rtol=1e-13)
     kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp)
+
+    if refine
+        kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy;
+                                 itmax=refine_itmax, atol=refine_atol, rtol=refine_rtol)
+    end
+
     lmul!(-1, Δy)
 
     copyto!(Δd, rd)
@@ -210,20 +225,41 @@ function maxsteps(p, d, Δp, Δd, caches, cones, B; frac=0.99)
     return τp, τd
 end
 
-function inity(B::BlockSparseMatrix{T}) where {T}
-    return zeros(T, size(B, 1))
-end
+#
+# scaled (Mehrotra-style) starting point
+#
+# Start from the block-diagonal cone identity e and scale the primal and
+# dual copies independently so the two initial infeasibilities live on the
+# same scale as the data:
+#
+#   primal:  ξ chosen so that ‖B (ξe)‖ ≈ ‖g‖   (reach the consensus RHS)
+#   dual:    η chosen so that   ‖ηe‖   ≈ ‖c‖    (balance the cost)
+#
+# This removes the "scale-discovery" phase where μ shoots up several orders
+# of magnitude on the first step because both copies start at e. A positive
+# multiple of e is still perfectly centered, so no interior shift is needed,
+# and y can stay at 0 (dual feasibility is reached quickly regardless).
+#
+function startingpoint(B::BlockSparseMatrix{T}, g::AbstractVector{T},
+                       c::AbstractVector{T}, cones::AbstractVector) where {T}
+    m, n = size(B)
 
-function initp(B::BlockSparseMatrix{T}, cones::AbstractVector) where {T}
-    p = zeros(T, size(B, 2))
+    e = zeros(T, n)
     for v in vtxs(B)
-        identity!(view(p, colrange(B, v)), cones[v])
+        identity!(view(e, colrange(B, v)), cones[v])
     end
-    return p
-end
 
-function initd(B::BlockSparseMatrix, cones::AbstractVector)
-    return initp(B, cones)
+    Be = zeros(T, m)
+    mul!(Be, B, e)
+
+    ξ = max(one(T), norm(g) / max(eps(T), norm(Be)))
+    η = max(one(T), norm(c) / max(eps(T), norm(e)))
+
+    p = ξ .* e
+    d = η .* e
+    y = zeros(T, m)
+
+    return p, d, y
 end
 
 function isstalled(hist::IPMHistory; window=5, threshold=0.99, noise_floor=1e-12)
@@ -299,10 +335,10 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
     n = size(B0, 2)
     m = size(B0, 1)
 
-    y = inity(B0)
+    p0, d0, y = startingpoint(B0, g, prob.c, cones0)
 
-    p = P * initp(B0, cones0)
-    d = P * initd(B0, cones0)
+    p = P * p0
+    d = P * d0
     c = P * c0
 
     Q = halfselectvtxs(halfselectvtxs(Q0, R.perm), R.perm)
@@ -323,12 +359,16 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
 
     H = allocblockdiag(B)
     caches = Caches(cones, B)
+    sp = zeros(T, n)
+    sy = zeros(T, m)
+    dp = zeros(T, n)
+    dy = zeros(T, m)
     hist = IPMHistory{T}()
 
     return IPMSolver(
         p, d, y, c, g, B, Q, cones,
         P,
-        rp, rd, f, Δpa, Δya, Δda, Δp, Δy, Δd, H, caches, wrk,
+        rp, rd, f, Δpa, Δya, Δda, Δp, Δy, Δd, H, caches, wrk, sp, sy, dp, dy,
         hist, 0, 0, ITERATION_LIMIT, ν,
         settings
     )
@@ -348,6 +388,10 @@ function step!(s::IPMSolver{T}) where {T}
     else
         μ = dot(s.p, s.d) / s.ν
     end
+    #
+    # iterative refinement only in endgame (when μ is close to gap_tol)
+    #
+    do_refine = μ < 100 * s.settings.gap_tol
     #
     # check the quantities
     #
@@ -387,7 +431,9 @@ function step!(s::IPMSolver{T}) where {T}
     #
     axpby!(-1, s.d,  0, s.f)
     axpby!(-1, s.rd, 1, s.f)
-    kkt_iters_aff = newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    kkt_iters_aff = newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q, s.sp, s.sy, s.dp, s.dy;
+                            refine=do_refine, refine_itmax=s.settings.refine_itmax,
+                            refine_atol=s.settings.refine_atol, refine_rtol=s.settings.refine_rtol)
     #
     # compute the centering parameter
     #
@@ -413,7 +459,9 @@ function step!(s::IPMSolver{T}) where {T}
     #
     corrector!(s.f, s.caches, s.cones, s.p, s.d, s.Δpa, s.Δda, σ * μ, s.B)
     axpy!(-1, s.rd, s.f)
-    kkt_iters_corr = newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q)
+    kkt_iters_corr = newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q, s.sp, s.sy, s.dp, s.dy;
+                             refine=do_refine, refine_itmax=s.settings.refine_itmax,
+                             refine_atol=s.settings.refine_atol, refine_rtol=s.settings.refine_rtol)
     kkt_iters = kkt_iters_aff + kkt_iters_corr
     #
     # take a step in the direction
