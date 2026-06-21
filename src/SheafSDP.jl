@@ -28,7 +28,7 @@ include("ipm.jl")
 export sheaf, solve_kkt!, factor_kkt!
 export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus, OPTIMAL, NEAR_OPTIMAL, STALLED, NUMERICAL_FAILURE, ITERATION_LIMIT
 export step!
-export Cone, SDP, POS, SOC, NOC
+export Cone, SDP, POS, SOC, NOC, EXP
 export KKTSettings, UzawaSettings, ADMMSettings
 export PreconditionerSettings, NoPrecSettings, JacobiSettings, SSORSettings, ICholSettings
 

@@ -26,6 +26,8 @@ function tocone(s::Symbol)
         return SOC()
     elseif s === :NOC
         return NOC()
+    elseif s === :EXP
+        return EXP()
     else
         error("Unknown cone: $s")
     end
