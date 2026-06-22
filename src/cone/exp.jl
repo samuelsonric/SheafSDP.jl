@@ -103,6 +103,14 @@ function norm3(x::AbstractVector)
     return sqrt(x[1]^2 + x[2]^2 + x[3]^2)
 end
 
+# M ← α x yᵀ + β M (3×3 rank-1 update)
+@inline function ger3!(M, x, y, α, β)
+    for j in 1:3, i in 1:3
+        M[i,j] = α * x[i] * y[j] + β * M[i,j]
+    end
+    return M
+end
+
 
 # Solve 2×2 system [a b; c d] [x; y] = [e; f]
 function solve2x2(a::T, b::T, c::T, d::T, e::T, f::T) where {T}
@@ -504,9 +512,9 @@ function expscale!(
         δs = copy3(s);  axpy3!(-μv, ss, δs)
         δ_dot = dot3(δx, δs)  # ⟨δx,δs⟩
 
-        mul3!(M, s, s', inv(xs_dot), 0)
-        mul3!(M, δs, δs', inv(δ_dot), 1)
-        mul3!(M, z, z', t, 1)
+        ger3!(M, s, s, inv(xs_dot), 0)
+        ger3!(M, δs, δs, inv(δ_dot), 1)
+        ger3!(M, z, z, t, 1)
     end
 
     return μv
@@ -604,7 +612,7 @@ function expmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, primal::Bool, 
     copyto!(x_test, x)
     axpy!(τ_hi, Δx, x_test)
     if membership(x_test)
-        return γ * τ_hi
+        return one(T)  # boundary is beyond 1, take full step
     end
 
     # Bisection
