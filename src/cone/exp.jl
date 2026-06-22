@@ -60,12 +60,42 @@ function cross3(x::AbstractVector{T}, y::AbstractVector{T}) where {T}
 end
 
 # 3×3 gemm: C = α*A*B + β*C (works for matrix-vector and matrix-matrix)
-function mul3!(C::AbstractArray, A::AbstractArray, B::AbstractArray, α=1, β=0)
-    n = size(B, 2)
-    for j in 1:n, i in 1:3
-        C[i,j] = α * (A[i,1] * B[1,j] + A[i,2] * B[2,j] + A[i,3] * B[3,j]) + β * C[i,j]
-    end
+function mul3!(C::AbstractArray, A::AbstractArray, B::AbstractArray)
+    return mul3!(C, A, B, true, false)
+end
+
+function mul3!(C::AbstractVector, A::AbstractMatrix, B::AbstractVector, α::Number, β::Number)
+    C[1] = α * (A[1,1]*B[1] + A[1,2]*B[2] + A[1,3]*B[3]) + β*C[1]
+    C[2] = α * (A[2,1]*B[1] + A[2,2]*B[2] + A[2,3]*B[3]) + β*C[2]
+    C[3] = α * (A[3,1]*B[1] + A[3,2]*B[2] + A[3,3]*B[3]) + β*C[3]
     return C
+end
+
+function mul3!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, α::Number, β::Number)
+    C[1,1] = α * (A[1,1]*B[1,1] + A[1,2]*B[2,1] + A[1,3]*B[3,1]) + β*C[1,1]
+    C[2,1] = α * (A[2,1]*B[1,1] + A[2,2]*B[2,1] + A[2,3]*B[3,1]) + β*C[2,1]
+    C[3,1] = α * (A[3,1]*B[1,1] + A[3,2]*B[2,1] + A[3,3]*B[3,1]) + β*C[3,1]
+    C[1,2] = α * (A[1,1]*B[1,2] + A[1,2]*B[2,2] + A[1,3]*B[3,2]) + β*C[1,2]
+    C[2,2] = α * (A[2,1]*B[1,2] + A[2,2]*B[2,2] + A[2,3]*B[3,2]) + β*C[2,2]
+    C[3,2] = α * (A[3,1]*B[1,2] + A[3,2]*B[2,2] + A[3,3]*B[3,2]) + β*C[3,2]
+    C[1,3] = α * (A[1,1]*B[1,3] + A[1,2]*B[2,3] + A[1,3]*B[3,3]) + β*C[1,3]
+    C[2,3] = α * (A[2,1]*B[1,3] + A[2,2]*B[2,3] + A[2,3]*B[3,3]) + β*C[2,3]
+    C[3,3] = α * (A[3,1]*B[1,3] + A[3,2]*B[2,3] + A[3,3]*B[3,3]) + β*C[3,3]
+    return C
+end
+
+# M ← α x yᵀ + β M (3×3 rank-1 update)
+function ger3!(M, x, y, α, β)
+    M[1,1] = α * x[1] * y[1] + β * M[1,1]
+    M[2,1] = α * x[2] * y[1] + β * M[2,1]
+    M[3,1] = α * x[3] * y[1] + β * M[3,1]
+    M[1,2] = α * x[1] * y[2] + β * M[1,2]
+    M[2,2] = α * x[2] * y[2] + β * M[2,2]
+    M[3,2] = α * x[3] * y[2] + β * M[3,2]
+    M[1,3] = α * x[1] * y[3] + β * M[1,3]
+    M[2,3] = α * x[2] * y[3] + β * M[2,3]
+    M[3,3] = α * x[3] * y[3] + β * M[3,3]
+    return M
 end
 
 # 3-element BLAS-style operations
@@ -74,12 +104,16 @@ function copy3(x::AbstractVector)
 end
 
 function copy3!(y::AbstractVector, x::AbstractVector)
-    y[1] = x[1]; y[2] = x[2]; y[3] = x[3]
+    y[1] = x[1]
+    y[2] = x[2]
+    y[3] = x[3]
     return y
 end
 
 function axpy3!(a, x::AbstractVector, y::AbstractVector)
-    y[1] += a * x[1]; y[2] += a * x[2]; y[3] += a * x[3]
+    y[1] += a * x[1]
+    y[2] += a * x[2]
+    y[3] += a * x[3]
     return y
 end
 
@@ -91,7 +125,9 @@ function axpby3!(a, x::AbstractVector, b, y::AbstractVector)
 end
 
 function scal3!(a, x::AbstractVector)
-    x[1] *= a; x[2] *= a; x[3] *= a
+    x[1] *= a
+    x[2] *= a   
+    x[3] *= a
     return x
 end
 
@@ -102,15 +138,6 @@ end
 function norm3(x::AbstractVector)
     return sqrt(x[1]^2 + x[2]^2 + x[3]^2)
 end
-
-# M ← α x yᵀ + β M (3×3 rank-1 update)
-@inline function ger3!(M, x, y, α, β)
-    for j in 1:3, i in 1:3
-        M[i,j] = α * x[i] * y[j] + β * M[i,j]
-    end
-    return M
-end
-
 
 # Solve 2×2 system [a b; c d] [x; y] = [e; f]
 function solve2x2(a::T, b::T, c::T, d::T, e::T, f::T) where {T}
@@ -320,9 +347,11 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
         xs[3] -= one(T)
     end
 
-    g = zeros(T, 3)
-    R = zeros(T, 3, 3)
-    Δ = zeros(T, 3)
+    # Workspaces
+    g      = zeros(T, 3)
+    R      = zeros(T, 3, 3)
+    Δ      = zeros(T, 3)
+    xs_new = zeros(T, 3)
 
     for iter in 1:maxiter
         # Residual: F'(x̃) + s
@@ -342,9 +371,10 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
         # Line search
         θ = one(T)
         while θ > T(1e-10)
-            xs_new = copy3(xs); axpy3!(θ, Δ, xs_new)
+            copy3!(xs_new, xs)
+            axpy3!(θ, Δ, xs_new)
             if in_exp_primal(xs_new)
-                copyto!(xs, xs_new)
+                copy3!(xs, xs_new)
                 break
             end
             θ *= T(0.5)
@@ -369,38 +399,37 @@ end
 #
 
 function exp_bfgs_t(R::AbstractMatrix{T}, xs::AbstractVector{T}, ss::AbstractVector{T}, μv::T, μt::T) where {T}
+    # Workspaces
+    Rtxs  = zeros(T, 3)
+    Fppxs = zeros(T, 3)
+    v     = zeros(T, 3)
+    Rtss  = zeros(T, 3)
+    Rtv   = zeros(T, 3)
+    RtR   = zeros(T, 3, 3)
+
     # Rᵀx̃
-    Rtxs = zeros(T, 3)
     mul3!(Rtxs, R', xs)
 
     # F''x̃ = R(Rᵀx̃)
-    Fppxs = zeros(T, 3)
     mul3!(Fppxs, R, Rtxs)
 
     # d = ⟨x̃, F''x̃⟩ - 3μ̃² = ‖Rᵀx̃‖² - 3μ̃²
     d = dot3(Rtxs, Rtxs) - 3 * μt^2
 
     # v = F''x̃ - μ̃s̃
-    v = copy3(Fppxs)
+    copy3!(v, Fppxs)
     axpy3!(-μt, ss, v)
 
     # Rᵀs̃
-    Rtss = zeros(T, 3)
     mul3!(Rtss, R', ss)
 
     # Rᵀv
-    Rtv = zeros(T, 3)
     mul3!(Rtv, R', v)
 
     # ‖F''‖_F² = ‖RᵀR‖_F² = Σᵢⱼ (Σₖ Rₖᵢ Rₖⱼ)²
     # But simpler: ‖RᵀR‖_F² = tr((RᵀR)²) = ‖RRᵀ‖_F² = Σᵢⱼ F''ᵢⱼ²
     # We compute ‖RᵀR‖_F directly
-    RtR = zeros(T, 3, 3)
-    for j in 1:3, i in 1:3
-        for k in 1:3
-            RtR[i,j] += R[k,i] * R[k,j]
-        end
-    end
+    mul3!(RtR, R', R)
     norm_Fpp_sq = zero(T)
     for j in 1:3, i in 1:3
         norm_Fpp_sq += RtR[i,j]^2
@@ -560,21 +589,22 @@ function expcorr!(
         σμ::Real
     ) where {T}
 
-    # F'(p)
+    # Workspaces
     Fp = zeros(T, 3)
+    v  = zeros(T, 3)
+    η  = zeros(T, 3)
+    D  = zeros(T, 3, 3)
+
+    # F'(p)
     exp_barrier_grad!(Fp, p)
 
     # v = F''(p)⁻¹Δd using expsolve! (Change 1)
-    v = copy(Δd)
+    copy3!(v, Δd)
     expsolve!(R, v)
 
     # η = -½ F'''(p)[Δp, v]
-    D = zeros(T, 3, 3)
     exp_barrier_hess_dir!(D, p, Δp)
-
-    η = zeros(T, 3)
-    mul3!(η, D, v)
-    ldiv!(-2, η)
+    mul3!(η, D, v, -0.5, 0)
 
     # r = -d - σμ·F'(p) - η
     copy3!(r, d)
@@ -603,10 +633,11 @@ end
 function expmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, primal::Bool, γ::Real) where {T}
     membership = primal ? in_exp_primal : in_exp_dual
 
+    # Workspace
+    x_test = zeros(T, 3)
+
     τ_lo = zero(T)
     τ_hi = one(T)
-
-    x_test = similar(x)
 
     # Check if full step is feasible
     copyto!(x_test, x)
