@@ -166,18 +166,15 @@ function residuals!(rp, rd, B, p, d, y, c, g, Q)
     return rp, rd
 end
 
-function hess!(H::BlockSparseMatrix{T}, caches::Caches{T},
-               cones::AbstractVector, p::AbstractVector{T}, d::AbstractVector{T},
-               B::BlockSparseMatrix{T}, Q) where {T}
+function scale!(H::BlockSparseMatrix{T}, caches::Caches{T},
+                cones::AbstractVector, p::AbstractVector{T}, d::AbstractVector{T},
+                B::BlockSparseMatrix{T}, Q) where {T}
     for v in vtxs(B)
         r = colrange(B, v)
         Hv = block(H, v, v, v)
         cv = cache(caches, v, cones[v])
-        pv = view(p, r)
-        dv = view(d, r)
 
-        scale!(pv, dv, cv)
-        hess!(Hv, pv, dv, cv)
+        scale!(Hv, view(p, r), view(d, r), cv)
         axpy!(true, block(Q, v, v, v), Hv)
     end
 
@@ -220,8 +217,8 @@ function maxsteps(p, d, Δp, Δd, caches, cones, B; frac=0.99)
     for v in vtxs(B)
         r = colrange(B, v)
         cv = cache(caches, v, cones[v])
-        τp = min(τp, maxstep(view(p, r), view(Δp, r), true, frac, cv))
-        τd = min(τd, maxstep(view(d, r), view(Δd, r), false, frac, cv))
+        τp = min(τp, maxstep_prim(view(p, r), view(Δp, r), frac, cv))
+        τd = min(τd, maxstep_dual(view(d, r), view(Δd, r), frac, cv))
     end
 
     return τp, τd
@@ -418,7 +415,7 @@ function step!(s::IPMSolver{T}) where {T}
     # where f is the barrier function and
     # w is the scaling point.
     #
-    hess!(s.H, s.caches, s.cones, s.p, s.d, s.B, s.Q)
+    scale!(s.H, s.caches, s.cones, s.p, s.d, s.B, s.Q)
 
     if !init_kkt!(s.wrk, s.settings.kkt, s.H)
         s.status = NUMERICAL_FAILURE

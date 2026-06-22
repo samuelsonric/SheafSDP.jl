@@ -29,7 +29,8 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
     P_proj = [1.0 0.0 0.0 0.0; 0.0 1.0 0.0 0.0]
 
     x0 = [randn(nx) for _ in 1:N]
-    edges = [(i, j) for i in 1:N for j in i+1:N]
+    # Use spanning tree (path graph) instead of complete graph to avoid redundant constraints
+    edges = [(i, i+1) for i in 1:N-1]
     ne = length(edges)
 
     #

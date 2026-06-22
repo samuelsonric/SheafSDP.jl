@@ -9,7 +9,7 @@
 #
 using LinearAlgebra
 using SheafSDP: exp_psi, exp_barrier_grad!, exp_barrier_factor!, exp_barrier_hess_dir!,
-                expscale!, exp_shadow_primal!, cross3, in_exp_primal
+                expscale!, exp_shadow_primal!, cross3!, in_exp_primal
 
 # Barrier function F(x) = -log(ψ) - log(x₁) - log(x₂)
 function exp_barrier(x)
@@ -163,7 +163,8 @@ for trial in 1:5
     secant_err = norm(Mx - s) / (norm(s) + 1e-10)
 
     # Check centrality
-    z = cross3(x, xs)
+    z = zeros(3)
+    cross3!(z, x, xs)
     rel_z = norm(z) / (norm(x) * norm(xs) + eps())
 
     status = secant_err < 1e-6 ? "PASS" : (secant_err < 1e-3 ? "WEAK" : "FAIL")
@@ -215,7 +216,8 @@ for trial in 1:20
 
     μv = expscale!(M, R, xs, ss, x, s)
 
-    z = cross3(x, xs)
+    z = zeros(3)
+    cross3!(z, x, xs)
     rel_z = norm(z) / (norm(x) * norm(xs) + eps())
 
     if rel_z > sqrt(eps())
@@ -255,7 +257,8 @@ for scale in [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4]
 
     μv = expscale!(M, R, xs, ss, x_central, s)
 
-    z = cross3(x_central, xs)
+    z = zeros(3)
+    cross3!(z, x_central, xs)
     rel_z = norm(z) / (norm(x_central) * norm(xs) + eps())
 
     # Check M is PD

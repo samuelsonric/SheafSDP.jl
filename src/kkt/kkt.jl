@@ -11,7 +11,7 @@ function refine_kkt!(
         Δy::AbstractVector{T},
         wrk::KKTWorkspace{T},
         set::KKTSettings{T},
-        H::AbstractMatrix{T},
+        A::AbstractMatrix{T},
         B::AbstractMatrix{T},
         ξp::AbstractVector{T},
         ξy::AbstractVector{T},
@@ -31,10 +31,10 @@ function refine_kkt!(
         #
         # compute the primal residual:
         #
-        #   sp = ξp - H Δp - Bᵀ Δy
+        #   sp = ξp - A Δp - Bᵀ Δy
         #
         copyto!(sp, ξp)
-        mul!(sp, Symmetric(H, :L), Δp, -1, 1)
+        mul!(sp, Symmetric(A, :L), Δp, -1, 1)
         mul!(sp, B', Δy, -1, 1)
         #
         # compute the dual residual:
@@ -52,10 +52,10 @@ function refine_kkt!(
         #
         # solve for dp and dy:
         #
-        #   [ H  Bᵀ ] [ dp ] = [ sp ]
+        #   [ A  Bᵀ ] [ dp ] = [ sp ]
         #   [ B  0  ] [ dy ]   [ sy ]
         #
-        kkt_iters += solve_kkt!(wrk, set, dp, dy, H, B, sp, sy)
+        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy)
         #
         # update the directions:
         #

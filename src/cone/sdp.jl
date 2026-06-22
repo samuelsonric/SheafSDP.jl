@@ -195,43 +195,23 @@ function sdpscale!(
     return
 end
 
-function scale!(p::AbstractVector, d::AbstractVector, cache::SDPCache{T}) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SDPCache{T}) where {T}
     sdpscale!(cache.LP, cache.LD, cache.U, cache.s, p, d)
-end
 
-# compute H_v = W⁻¹ ⊗ₛ W⁻¹
-# W⁻¹ = L⁻ᵀ U Σ Uᵀ L⁻¹ where W = R Rᵀ with R = L U Σ^{-1/2}
-function sdphess!(
-        H::AbstractMatrix{T},
-        L::AbstractMatrix{T},
-        U::AbstractMatrix{T},
-        s::AbstractVector{T}
-    ) where {T}
+    # compute H_v = W⁻¹ ⊗ₛ W⁻¹
+    # W⁻¹ = L⁻ᵀ U Σ Uᵀ L⁻¹ where W = R Rᵀ with R = L U Σ^{-1/2}
+    L, U, s = cache.LP, cache.U, cache.s
     n = size(L, 1)
 
     W = zeros(T, n, n)
     X = zeros(T, n, n)
-    #
-    # compute the product
-    #
-    #   X = L⁻ᵀ U Σ Uᵀ L⁻¹      
-    #
+
     mul!(W, U, Diagonal(s))
     mul!(X, W, U')
     ldiv!(LowerTriangular(L)', X)
     rdiv!(X, LowerTriangular(L))
 
     return skron!(H, X)
-end
-
-function hess!(
-        H::AbstractMatrix{T},
-        ::AbstractVector{T},
-        ::AbstractVector{T},
-        cache::SDPCache{T}
-    ) where {T}
-    sdphess!(H, cache.LP, cache.U, cache.s)
-    return H
 end
 
 # H·R_c = L⁻ᵀ U [σμI - Σ² - Σ B_mat Σ] Uᵀ L⁻¹
@@ -294,21 +274,8 @@ function corr!(
     return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
 end
 
-function sdpmaxstep(
-        LP::AbstractMatrix{T},
-        LD::AbstractMatrix{T},
-        Δx::AbstractVector{T},
-        primal::Bool,
-        γ::Real
-    ) where {T}
-    n = size(LP, 1)
-
-    if primal
-        L = LowerTriangular(LP)
-    else
-        L = LowerTriangular(LD)
-    end
-
+function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+    n = size(L, 1)
     M = zeros(T, n, n)
     W = Vector{T}(undef, n)
     work = zeros(T, 1)
@@ -330,12 +297,10 @@ function sdpmaxstep(
     return γ / max(γ, -λ)
 end
 
-function maxstep(
-        ::AbstractVector{T},
-        Δx::AbstractVector{T},
-        primal::Bool,
-        γ::Real,
-        cache::SDPCache{T}
-    ) where {T}
-    return sdpmaxstep(cache.LP, cache.LD, Δx, primal, γ)
+function maxstep_prim(::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, cache::SDPCache{T}) where {T}
+    return sdpmaxstep(LowerTriangular(cache.LP), Δx, γ)
+end
+
+function maxstep_dual(::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, cache::SDPCache{T}) where {T}
+    return sdpmaxstep(LowerTriangular(cache.LD), Δx, γ)
 end

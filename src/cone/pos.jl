@@ -29,27 +29,12 @@ function identity!(x::AbstractVector{T}, ::POS) where {T}
     return x
 end
 
-function scale!(::AbstractVector, ::AbstractVector, ::POSCache)
-    return
-end
-
-function poshess!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, ::POSCache) where {T}
     fill!(H, zero(T))
-
     for i in eachindex(p)
         H[i, i] = d[i] / p[i]
     end
-
     return H
-end
-
-function hess!(
-        H::AbstractMatrix{T},
-        p::AbstractVector{T},
-        d::AbstractVector{T},
-        ::POSCache
-    ) where {T}
-    poshess!(H, p, d)
 end
 
 function poscorr!(
@@ -93,12 +78,10 @@ function posmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
     return τ
 end
 
-function maxstep(
-        x::AbstractVector{T},
-        Δx::AbstractVector{T},
-        ::Bool,
-        γ::Real,
-        ::POSCache
-    ) where {T}
+function maxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::POSCache) where {T}
+    return posmaxstep(x, Δx, γ)
+end
+
+function maxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::POSCache) where {T}
     return posmaxstep(x, Δx, γ)
 end

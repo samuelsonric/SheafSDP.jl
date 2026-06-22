@@ -29,16 +29,7 @@ function identity!(x::AbstractVector{T}, ::NOC) where {T}
     return x
 end
 
-function scale!(::AbstractVector, ::AbstractVector, ::NOCCache)
-    return
-end
-
-function hess!(
-        H::AbstractMatrix{T},
-        ::AbstractVector{T},
-        ::AbstractVector{T},
-        ::NOCCache
-    ) where {T}
+function scale!(H::AbstractMatrix{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::NOCCache) where {T}
     fill!(H, zero(T))
     return H
 end
@@ -56,12 +47,10 @@ function corr!(
     return r
 end
 
-function maxstep(
-        ::AbstractVector{T},
-        ::AbstractVector{T},
-        ::Bool,
-        ::Real,
-        ::NOCCache
-    ) where {T}
+function maxstep_prim(::AbstractVector{T}, ::AbstractVector{T}, ::Real, ::NOCCache) where {T}
+    return one(T)
+end
+
+function maxstep_dual(::AbstractVector{T}, ::AbstractVector{T}, ::Real, ::NOCCache) where {T}
     return one(T)
 end

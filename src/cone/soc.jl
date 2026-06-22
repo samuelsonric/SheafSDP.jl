@@ -158,11 +158,11 @@ function socscale!(
     return β
 end
 
-function scale!(p::AbstractVector{T}, d::AbstractVector{T}, cache::SOCCache{T}) where {T}
-    cache.β[] = socscale!(cache.w, p, d)
-end
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SOCCache{T}) where {T}
+    β = socscale!(cache.w, p, d)
+    cache.β[] = β
 
-function sochess!(H::AbstractMatrix{T}, w::AbstractVector{T}, β::T) where {T}
+    w = cache.w
     n = length(w)
     η = inv(β^2)
 
@@ -181,15 +181,6 @@ function sochess!(H::AbstractMatrix{T}, w::AbstractVector{T}, β::T) where {T}
     end
 
     return H
-end
-
-function hess!(
-        H::AbstractMatrix{T},
-        ::AbstractVector{T},
-        ::AbstractVector{T},
-        cache::SOCCache{T}
-    ) where {T}
-    sochess!(H, cache.w, cache.β[])
 end
 
 function soccorr!(
@@ -317,12 +308,10 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
     return τ
 end
 
-function maxstep(
-        x::AbstractVector{T},
-        Δx::AbstractVector{T},
-        ::Bool,
-        γ::Real,
-        ::SOCCache{T}
-    ) where {T}
-    socmaxstep(x, Δx, γ)
+function maxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::SOCCache{T}) where {T}
+    return socmaxstep(x, Δx, γ)
+end
+
+function maxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::SOCCache{T}) where {T}
+    return socmaxstep(x, Δx, γ)
 end

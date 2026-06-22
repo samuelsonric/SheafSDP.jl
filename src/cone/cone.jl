@@ -32,19 +32,12 @@ Set x to the identity element of the cone.
 function identity! end
 
 """
-    scale!(p, d, cache)
+    scale!(H, p, d, cache)
 
-Compute and cache the NT scaling from primal p and dual d.
+Compute the NT scaling from primal p and dual d, cache it,
+and write the Hessian block W⁻¹ ⊗ₛ W⁻¹ (or its analogue) into H.
 """
 function scale! end
-
-"""
-    hess!(H, p, d, cache)
-
-Compute the Hessian block W⁻¹ ⊗ₛ W⁻¹ (or its analogue) into H.
-SDP/SOC use the cache; POS computes directly from p, d.
-"""
-function hess! end
 
 """
     corr!(r, p, d, Δp, Δd, σμ, cache)
@@ -54,11 +47,13 @@ Compute the H-applied corrector term directly.
 function corr! end
 
 """
-    maxstep(x, Δx, primal, γ, cache) -> Real
+    maxstep_prim(x, Δx, γ, cache) -> Real
+    maxstep_dual(x, Δx, γ, cache) -> Real
 
 Compute the maximum step τ ∈ (0,1] such that x + τΔx stays in the cone interior.
 """
-function maxstep end
+function maxstep_prim end
+function maxstep_dual end
 
 """
     cachesize(cone::Cone, n::Int) -> Int

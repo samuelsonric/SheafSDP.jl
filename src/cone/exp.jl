@@ -53,56 +53,78 @@ function cross3!(z::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T
     return z
 end
 
-# Cross product returning new vector
-function cross3(x::AbstractVector{T}, y::AbstractVector{T}) where {T}
-    z = similar(x)
-    return cross3!(z, x, y)
-end
-
 # 3×3 gemm: C = α*A*B + β*C (works for matrix-vector and matrix-matrix)
 function mul3!(C::AbstractArray, A::AbstractArray, B::AbstractArray)
     return mul3!(C, A, B, true, false)
 end
 
 function mul3!(C::AbstractVector, A::AbstractMatrix, B::AbstractVector, α::Number, β::Number)
-    C[1] = α * (A[1,1]*B[1] + A[1,2]*B[2] + A[1,3]*B[3]) + β*C[1]
-    C[2] = α * (A[2,1]*B[1] + A[2,2]*B[2] + A[2,3]*B[3]) + β*C[2]
-    C[3] = α * (A[3,1]*B[1] + A[3,2]*B[2] + A[3,3]*B[3]) + β*C[3]
+    if iszero(β)
+        C[1] = α * (A[1,1] * B[1] + A[1,2] * B[2] + A[1,3] * B[3])
+        C[2] = α * (A[2,1] * B[1] + A[2,2] * B[2] + A[2,3] * B[3])
+        C[3] = α * (A[3,1] * B[1] + A[3,2] * B[2] + A[3,3] * B[3])
+    else
+        C[1] = α * (A[1,1] * B[1] + A[1,2] * B[2] + A[1,3] * B[3]) + β * C[1]
+        C[2] = α * (A[2,1] * B[1] + A[2,2] * B[2] + A[2,3] * B[3]) + β * C[2]
+        C[3] = α * (A[3,1] * B[1] + A[3,2] * B[2] + A[3,3] * B[3]) + β * C[3]
+    end
     return C
 end
 
 function mul3!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, α::Number, β::Number)
-    C[1,1] = α * (A[1,1]*B[1,1] + A[1,2]*B[2,1] + A[1,3]*B[3,1]) + β*C[1,1]
-    C[2,1] = α * (A[2,1]*B[1,1] + A[2,2]*B[2,1] + A[2,3]*B[3,1]) + β*C[2,1]
-    C[3,1] = α * (A[3,1]*B[1,1] + A[3,2]*B[2,1] + A[3,3]*B[3,1]) + β*C[3,1]
-    C[1,2] = α * (A[1,1]*B[1,2] + A[1,2]*B[2,2] + A[1,3]*B[3,2]) + β*C[1,2]
-    C[2,2] = α * (A[2,1]*B[1,2] + A[2,2]*B[2,2] + A[2,3]*B[3,2]) + β*C[2,2]
-    C[3,2] = α * (A[3,1]*B[1,2] + A[3,2]*B[2,2] + A[3,3]*B[3,2]) + β*C[3,2]
-    C[1,3] = α * (A[1,1]*B[1,3] + A[1,2]*B[2,3] + A[1,3]*B[3,3]) + β*C[1,3]
-    C[2,3] = α * (A[2,1]*B[1,3] + A[2,2]*B[2,3] + A[2,3]*B[3,3]) + β*C[2,3]
-    C[3,3] = α * (A[3,1]*B[1,3] + A[3,2]*B[2,3] + A[3,3]*B[3,3]) + β*C[3,3]
+    if iszero(β)
+        C[1,1] = α * (A[1,1] * B[1,1] + A[1,2] * B[2,1] + A[1,3] * B[3,1])
+        C[2,1] = α * (A[2,1] * B[1,1] + A[2,2] * B[2,1] + A[2,3] * B[3,1])
+        C[3,1] = α * (A[3,1] * B[1,1] + A[3,2] * B[2,1] + A[3,3] * B[3,1])
+        C[1,2] = α * (A[1,1] * B[1,2] + A[1,2] * B[2,2] + A[1,3] * B[3,2])
+        C[2,2] = α * (A[2,1] * B[1,2] + A[2,2] * B[2,2] + A[2,3] * B[3,2])
+        C[3,2] = α * (A[3,1] * B[1,2] + A[3,2] * B[2,2] + A[3,3] * B[3,2])
+        C[1,3] = α * (A[1,1] * B[1,3] + A[1,2] * B[2,3] + A[1,3] * B[3,3])
+        C[2,3] = α * (A[2,1] * B[1,3] + A[2,2] * B[2,3] + A[2,3] * B[3,3])
+        C[3,3] = α * (A[3,1] * B[1,3] + A[3,2] * B[2,3] + A[3,3] * B[3,3])
+    else
+        C[1,1] = α * (A[1,1] * B[1,1] + A[1,2] * B[2,1] + A[1,3] * B[3,1]) + β * C[1,1]
+        C[2,1] = α * (A[2,1] * B[1,1] + A[2,2] * B[2,1] + A[2,3] * B[3,1]) + β * C[2,1]
+        C[3,1] = α * (A[3,1] * B[1,1] + A[3,2] * B[2,1] + A[3,3] * B[3,1]) + β * C[3,1]
+        C[1,2] = α * (A[1,1] * B[1,2] + A[1,2] * B[2,2] + A[1,3] * B[3,2]) + β * C[1,2]
+        C[2,2] = α * (A[2,1] * B[1,2] + A[2,2] * B[2,2] + A[2,3] * B[3,2]) + β * C[2,2]
+        C[3,2] = α * (A[3,1] * B[1,2] + A[3,2] * B[2,2] + A[3,3] * B[3,2]) + β * C[3,2]
+        C[1,3] = α * (A[1,1] * B[1,3] + A[1,2] * B[2,3] + A[1,3] * B[3,3]) + β * C[1,3]
+        C[2,3] = α * (A[2,1] * B[1,3] + A[2,2] * B[2,3] + A[2,3] * B[3,3]) + β * C[2,3]
+        C[3,3] = α * (A[3,1] * B[1,3] + A[3,2] * B[2,3] + A[3,3] * B[3,3]) + β * C[3,3]
+    end
+
     return C
 end
 
 # M ← α x yᵀ + β M (3×3 rank-1 update)
 function ger3!(M, x, y, α, β)
-    M[1,1] = α * x[1] * y[1] + β * M[1,1]
-    M[2,1] = α * x[2] * y[1] + β * M[2,1]
-    M[3,1] = α * x[3] * y[1] + β * M[3,1]
-    M[1,2] = α * x[1] * y[2] + β * M[1,2]
-    M[2,2] = α * x[2] * y[2] + β * M[2,2]
-    M[3,2] = α * x[3] * y[2] + β * M[3,2]
-    M[1,3] = α * x[1] * y[3] + β * M[1,3]
-    M[2,3] = α * x[2] * y[3] + β * M[2,3]
-    M[3,3] = α * x[3] * y[3] + β * M[3,3]
+    if iszero(β)
+        M[1,1] = α * x[1] * y[1]
+        M[2,1] = α * x[2] * y[1]
+        M[3,1] = α * x[3] * y[1]
+        M[1,2] = α * x[1] * y[2]
+        M[2,2] = α * x[2] * y[2]
+        M[3,2] = α * x[3] * y[2]
+        M[1,3] = α * x[1] * y[3]
+        M[2,3] = α * x[2] * y[3]
+        M[3,3] = α * x[3] * y[3]
+    else
+        M[1,1] = α * x[1] * y[1] + β * M[1,1]
+        M[2,1] = α * x[2] * y[1] + β * M[2,1]
+        M[3,1] = α * x[3] * y[1] + β * M[3,1]
+        M[1,2] = α * x[1] * y[2] + β * M[1,2]
+        M[2,2] = α * x[2] * y[2] + β * M[2,2]
+        M[3,2] = α * x[3] * y[2] + β * M[3,2]
+        M[1,3] = α * x[1] * y[3] + β * M[1,3]
+        M[2,3] = α * x[2] * y[3] + β * M[2,3]
+        M[3,3] = α * x[3] * y[3] + β * M[3,3]
+    end
+
     return M
 end
 
 # 3-element BLAS-style operations
-function copy3(x::AbstractVector)
-    return [x[1], x[2], x[3]]
-end
-
 function copy3!(y::AbstractVector, x::AbstractVector)
     y[1] = x[1]
     y[2] = x[2]
@@ -124,11 +146,32 @@ function axpby3!(a, x::AbstractVector, b, y::AbstractVector)
     return y
 end
 
-function scal3!(a, x::AbstractVector)
+function rmul3!(x::AbstractVector, a)
     x[1] *= a
-    x[2] *= a   
+    x[2] *= a
     x[3] *= a
     return x
+end
+
+function rmul3!(M::AbstractMatrix, a)
+    M[1,1] *= a; M[2,1] *= a; M[3,1] *= a
+    M[1,2] *= a; M[2,2] *= a; M[3,2] *= a
+    M[1,3] *= a; M[2,3] *= a; M[3,3] *= a
+    return M
+end
+
+function fill3!(x::AbstractVector, a)
+    x[1] = a
+    x[2] = a
+    x[3] = a
+    return x
+end
+
+function fill3!(M::AbstractMatrix, a)
+    M[1,1] = a; M[2,1] = a; M[3,1] = a
+    M[1,2] = a; M[2,2] = a; M[3,2] = a
+    M[1,3] = a; M[2,3] = a; M[3,3] = a
+    return M
 end
 
 function dot3(x::AbstractVector, y::AbstractVector)
@@ -143,6 +186,25 @@ end
 function solve2x2(a::T, b::T, c::T, d::T, e::T, f::T) where {T}
     det = a * d - b * c
     return (d * e - b * f) / det, (a * f - c * e) / det
+end
+
+# Binary search for last t in [lo, hi] where f(t) is true
+function binarysearchlast(f, lo::T, hi::T, tol::T, itmax::Int) where {T}
+    for _ in 1:itmax
+        mid = (lo + hi) / 2
+
+        if f(mid)
+            lo = mid
+        else
+            hi = mid
+        end
+
+        if hi - lo < tol
+            break
+        end
+    end
+
+    return lo
 end
 
 #
@@ -485,6 +547,11 @@ function expscale!(
         s::AbstractVector{T}
     ) where {T}
 
+    # Workspace
+    z  = zeros(T, 3)
+    δx = zeros(T, 3)
+    δs = zeros(T, 3)
+
     # Stage 1: Analytic factor R(x), shadow dual s̃ = -F'(x)
     exp_barrier_factor!(R, x)
     exp_barrier_grad!(ss, x)
@@ -498,7 +565,7 @@ function expscale!(
     μt = dot3(xs, ss) / 3
 
     # Stage 3: Orthogonal completion z = x × x̃
-    z = cross3(x, xs)
+    cross3!(z, x, xs)
     nz = norm3(z)
 
     # Change 3: Unified guard on centrality
@@ -537,8 +604,8 @@ function expscale!(
 
         xs_dot = 3 * μv  # ⟨x,s⟩
 
-        δx = copy3(x);  axpy3!(-μv, xs, δx)
-        δs = copy3(s);  axpy3!(-μv, ss, δs)
+        copy3!(δx, x);  axpy3!(-μv, xs, δx)
+        copy3!(δs, s);  axpy3!(-μv, ss, δs)
         δ_dot = dot3(δx, δs)  # ⟨δx,δs⟩
 
         ger3!(M, s, s, inv(xs_dot), 0)
@@ -549,26 +616,9 @@ function expscale!(
     return μv
 end
 
-function scale!(p::AbstractVector{T}, d::AbstractVector{T}, cache::EXPCache{T}) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::EXPCache{T}) where {T}
     cache.μv[] = expscale!(cache.M, cache.R, cache.xs, cache.ss, p, d)
-end
-
-#
-# Hessian: copy cached M
-#
-
-function exphess!(H::AbstractMatrix{T}, M::AbstractMatrix{T}) where {T}
-    copyto!(H, M)
-    return H
-end
-
-function hess!(
-        H::AbstractMatrix{T},
-        ::AbstractVector{T},
-        ::AbstractVector{T},
-        cache::EXPCache{T}
-    ) where {T}
-    exphess!(H, cache.M)
+    copyto!(H, cache.M)
     return H
 end
 
@@ -630,48 +680,34 @@ end
 # Max step by bisection on cone membership
 #
 
-function expmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, primal::Bool, γ::Real) where {T}
-    membership = primal ? in_exp_primal : in_exp_dual
+function expmaxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+    w = zeros(T, 3)
 
-    # Workspace
-    x_test = zeros(T, 3)
-
-    τ_lo = zero(T)
-    τ_hi = one(T)
-
-    # Check if full step is feasible
-    copyto!(x_test, x)
-    axpy!(τ_hi, Δx, x_test)
-    if membership(x_test)
-        return one(T)  # boundary is beyond 1, take full step
+    τ = binarysearchlast(zero(T), one(T), eps(T), 53) do τ
+        copyto!(w, x)
+        axpy!(τ, Δx, w)
+        return in_exp_primal(w)
     end
 
-    # Bisection
-    for _ in 1:53
-        τ_mid = (τ_lo + τ_hi) / 2
-        copyto!(x_test, x)
-        axpy!(τ_mid, Δx, x_test)
-
-        if membership(x_test)
-            τ_lo = τ_mid
-        else
-            τ_hi = τ_mid
-        end
-
-        if τ_hi - τ_lo < eps(T)
-            break
-        end
-    end
-
-    return γ * τ_lo
+    return γ * τ
 end
 
-function maxstep(
-        x::AbstractVector{T},
-        Δx::AbstractVector{T},
-        primal::Bool,
-        γ::Real,
-        ::EXPCache{T}
-    ) where {T}
-    return expmaxstep(x, Δx, primal, γ)
+function expmaxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+    w = zeros(T, 3)
+
+    τ = binarysearchlast(zero(T), one(T), eps(T), 53) do τ
+        copyto!(w, x)
+        axpy!(τ, Δx, w)
+        return in_exp_dual(w)
+    end
+
+    return γ * τ
+end
+
+function maxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::EXPCache{T}) where {T}
+    return expmaxstep_prim(x, Δx, γ)
+end
+
+function maxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::EXPCache{T}) where {T}
+    return expmaxstep_dual(x, Δx, γ)
 end
