@@ -419,7 +419,16 @@ function step!(s::IPMSolver{T}) where {T}
     # w is the scaling point.
     #
     hess!(s.H, s.caches, s.cones, s.p, s.d, s.B, s.Q)
-    init_kkt!(s.wrk, s.settings.kkt, s.H)
+
+    if !init_kkt!(s.wrk, s.settings.kkt, s.H)
+        s.status = NUMERICAL_FAILURE
+
+        if s.settings.verbose
+            println("Warning: KKT factorization failed")
+        end
+
+        return false
+    end
     #
     # compute the affine direction (Δpa, Δya, Δda)
     # by solving for Δpa, Δya in

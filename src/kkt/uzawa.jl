@@ -59,10 +59,8 @@ function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
 end
 
 function init_kkt!(wrk::UzawaWorkspace{UPLO, T}, set::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
-    α = set.aaug + set.raug * norm(Symmetric(A, :L)) / wrk.nrm
-    wrk.α[] = α
-    init_uzw!(wrk.facwrk, wrk.F, wrk.L, A, α)
-    return wrk
+    wrk.α[] = α = set.aaug + set.raug * norm(Symmetric(A, :L)) / wrk.nrm
+    return init_uzw!(wrk.facwrk, wrk.F, wrk.L, A, α)
 end
 
 # form the augmented block
@@ -81,8 +79,8 @@ function init_uzw!(
 
     copyblockdiag!(F, A)
     axpby!(α, L, 1, F)
-    cholesky!(facwrk, F)
-    return F
+    info = cholesky!(facwrk, F; check=false)
+    return iszero(info)
 end
 
 function solve_kkt!(

@@ -64,17 +64,16 @@ function make_kkt(set::ADMMSettings{T, Pr}, B::BlockSparseMatrix{T, I}) where {T
 end
 
 function init_kkt!(wrk::ADMMWorkspace{UPLO, T}, set::ADMMSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
-    α = set.aaug + set.raug * norm(Symmetric(A, :L))
-    wrk.α[] = α
+    wrk.α[] = α = set.aaug + set.raug * norm(Symmetric(A, :L))
     wrk.τ[] = inv(wrk.nrm)
-    init_admm!(wrk.F, A, α, UPLO)
-    return wrk
+    return init_admm!(wrk.F, A, α, UPLO)
 end
 
 function init_admm!(F::BlockSparseMatrix, A::BlockSparseMatrix, α::Number, uplo::Symbol)
     @assert size(F, 1) == size(A, 1)
     copyblockdiag!(F, A)
-    return cholblockdiag!(F, uplo, α)
+    cholblockdiag!(F, uplo, α) # TODO -- check factorization
+    return true
 end
 
 function solve_kkt!(
