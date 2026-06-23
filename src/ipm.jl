@@ -344,7 +344,7 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
     H = allocblockdiag(B)
     caches = Caches(cones, B)
     for v in vtxs(B)
-        init_cache!(cache(caches, v, cones[v]))
+        initcache!(cache(caches, v, cones[v]))
     end
     sp = zeros(T, n)
     sy = zeros(T, m)

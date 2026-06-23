@@ -8,12 +8,12 @@
 #   4. Check the fallback crossover (rel_z near sqrt(eps))
 #
 using LinearAlgebra
-using SheafSDP: exp_psi, exp_barrier_grad!, exp_barrier_factor!, exp_barrier_hess_dir!,
-                expscale!, exp_shadow_primal!, cross3!, in_exp_primal
+using SheafSDP: exppsi, expbarrgrad!, expbarr!, expbarrhess!,
+                expscale!, expdualgrad!, cross3!, expincone
 
 # Barrier function F(x) = -log(ψ) - log(x₁) - log(x₂)
 function exp_barrier(x)
-    ψ = exp_psi(x)
+    ψ = exppsi(x)
     return -log(ψ) - log(x[1]) - log(x[2])
 end
 
@@ -62,13 +62,13 @@ println("-" ^ 50)
 for trial in 1:5
     # Random interior point
     x = [1.0 + rand(), 0.5 + rand(), -0.5 - rand()]
-    while !in_exp_primal(x)
+    while !expincone(x)
         x[1] *= 1.5
         x[3] -= 0.5
     end
 
     g_analytic = zeros(3)
-    exp_barrier_grad!(g_analytic, x)
+    expbarrgrad!(g_analytic, x)
     g_fd = fd_gradient(exp_barrier, x)
 
     err = norm(g_analytic - g_fd) / (norm(g_fd) + 1e-10)
@@ -85,13 +85,13 @@ println("-" ^ 50)
 
 for trial in 1:5
     x = [1.0 + rand(), 0.5 + rand(), -0.5 - rand()]
-    while !in_exp_primal(x)
+    while !expincone(x)
         x[1] *= 1.5
         x[3] -= 0.5
     end
 
     R = zeros(3, 3)
-    exp_barrier_factor!(R, x)
+    expbarr!(R, x)
     H_analytic = R * R'
     H_fd = fd_hessian(exp_barrier, x)
 
@@ -109,14 +109,14 @@ println("-" ^ 50)
 
 for trial in 1:5
     x = [1.0 + rand(), 0.5 + rand(), -0.5 - rand()]
-    while !in_exp_primal(x)
+    while !expincone(x)
         x[1] *= 1.5
         x[3] -= 0.5
     end
     u = randn(3)
 
     D_analytic = zeros(3, 3)
-    exp_barrier_hess_dir!(D_analytic, x, u)
+    expbarrhess!(D_analytic, x, u)
     D_fd = fd_hess_dir(exp_barrier, x, u; h=1e-4)
 
     err = norm(D_analytic - D_fd) / (norm(D_fd) + 1e-10)
@@ -134,7 +134,7 @@ println("-" ^ 50)
 for trial in 1:5
     # Create non-parallel x and s to force Tuncel branch
     x = [2.0 + rand(), 1.0 + rand(), -1.0 - rand()]
-    while !in_exp_primal(x)
+    while !expincone(x)
         x[1] *= 1.5
         x[3] -= 0.5
     end
@@ -142,7 +142,7 @@ for trial in 1:5
     # s should be in dual cone and not parallel to x
     # Use s = -F'(x) + perturbation to get non-central iterate
     g = zeros(3)
-    exp_barrier_grad!(g, x)
+    expbarrgrad!(g, x)
     s = -g .+ 0.1 .* randn(3)
 
     # Ensure s is in dual cone interior
@@ -187,14 +187,14 @@ for trial in 1:20
     θ = rand() * π/4 + π/8  # angle between 22.5 and 67.5 degrees
 
     x = [2.0, 1.0, -1.0]
-    while !in_exp_primal(x)
+    while !expincone(x)
         x[1] *= 1.5
         x[3] -= 0.5
     end
 
     # Rotate to get non-parallel s
     g = zeros(3)
-    exp_barrier_grad!(g, x)
+    expbarrgrad!(g, x)
     s_base = -g
 
     # Add perpendicular component
@@ -242,7 +242,7 @@ println("-" ^ 50)
 # Start near central path and move away
 x_central = [1.2909282315382298, 0.8051015526498357, -0.8278379086082098]
 g = zeros(3)
-exp_barrier_grad!(g, x_central)
+expbarrgrad!(g, x_central)
 s_central = -g  # exactly on central path
 
 for scale in [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4]
@@ -291,11 +291,11 @@ for trial in 1:5
     end
 
     xs = zeros(3)
-    exp_shadow_primal!(xs, s)
+    expdualgrad!(xs, s)
 
     # Check F'(xs) + s ≈ 0
     g = zeros(3)
-    exp_barrier_grad!(g, xs)
+    expbarrgrad!(g, xs)
     residual = norm(g + s)
 
     status = residual < 1e-10 ? "PASS" : "FAIL"

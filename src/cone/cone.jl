@@ -62,15 +62,15 @@ Return the number of T values needed in the cache for this cone with embdim n.
 function cachesize end
 
 """
-    init_cache!(cache)
+    initcache!(cache)
 
 Initialize a cone's cache to a valid starting state.
 Most cones need no initialization; EXP sets xs to the identity point.
 """
-function init_cache! end
+function initcache! end
 
 # Default no-op for cones that don't need initialization
-init_cache!(c::AbstractCache) = c
+initcache!(c::AbstractCache) = c
 
 # View types for cache structs
 const FScalarView{T} = SubArray{T, 0, FVector{T}, Tuple{Int64}, true}
@@ -118,4 +118,6 @@ include("sdp.jl")
 include("pos.jl")
 include("soc.jl")
 include("noc.jl")
+include("utils.jl")
 include("exp.jl")
+include("pow.jl")

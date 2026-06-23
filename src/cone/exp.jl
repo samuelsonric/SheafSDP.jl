@@ -42,175 +42,9 @@ function identity!(x::AbstractVector, ::ExponentialCone)
 end
 
 # Initialize cache.xs to identity point for warm-starting shadow primal
-function init_cache!(cache::ExponentialConeCache)
+function initcache!(cache::ExponentialConeCache)
     identity!(cache.xs, cache.cone)
     return cache
-end
-
-#
-# 3×3 linear algebra helpers
-#
-
-# Cross product of two 3-vectors: z = x × y
-function cross3!(z::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
-    z[1] = x[2] * y[3] - x[3] * y[2]
-    z[2] = x[3] * y[1] - x[1] * y[3]
-    z[3] = x[1] * y[2] - x[2] * y[1]
-    return z
-end
-
-# 3×3 gemm: C = α*A*B + β*C (works for matrix-vector and matrix-matrix)
-function mul3!(C::AbstractArray, A::AbstractArray, B::AbstractArray)
-    return mul3!(C, A, B, true, false)
-end
-
-function mul3!(C::AbstractVector, A::AbstractMatrix, B::AbstractVector, α::Number, β::Number)
-    if iszero(β)
-        C[1] = α * (A[1,1] * B[1] + A[1,2] * B[2] + A[1,3] * B[3])
-        C[2] = α * (A[2,1] * B[1] + A[2,2] * B[2] + A[2,3] * B[3])
-        C[3] = α * (A[3,1] * B[1] + A[3,2] * B[2] + A[3,3] * B[3])
-    else
-        C[1] = α * (A[1,1] * B[1] + A[1,2] * B[2] + A[1,3] * B[3]) + β * C[1]
-        C[2] = α * (A[2,1] * B[1] + A[2,2] * B[2] + A[2,3] * B[3]) + β * C[2]
-        C[3] = α * (A[3,1] * B[1] + A[3,2] * B[2] + A[3,3] * B[3]) + β * C[3]
-    end
-    return C
-end
-
-function mul3!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, α::Number, β::Number)
-    if iszero(β)
-        C[1,1] = α * (A[1,1] * B[1,1] + A[1,2] * B[2,1] + A[1,3] * B[3,1])
-        C[2,1] = α * (A[2,1] * B[1,1] + A[2,2] * B[2,1] + A[2,3] * B[3,1])
-        C[3,1] = α * (A[3,1] * B[1,1] + A[3,2] * B[2,1] + A[3,3] * B[3,1])
-        C[1,2] = α * (A[1,1] * B[1,2] + A[1,2] * B[2,2] + A[1,3] * B[3,2])
-        C[2,2] = α * (A[2,1] * B[1,2] + A[2,2] * B[2,2] + A[2,3] * B[3,2])
-        C[3,2] = α * (A[3,1] * B[1,2] + A[3,2] * B[2,2] + A[3,3] * B[3,2])
-        C[1,3] = α * (A[1,1] * B[1,3] + A[1,2] * B[2,3] + A[1,3] * B[3,3])
-        C[2,3] = α * (A[2,1] * B[1,3] + A[2,2] * B[2,3] + A[2,3] * B[3,3])
-        C[3,3] = α * (A[3,1] * B[1,3] + A[3,2] * B[2,3] + A[3,3] * B[3,3])
-    else
-        C[1,1] = α * (A[1,1] * B[1,1] + A[1,2] * B[2,1] + A[1,3] * B[3,1]) + β * C[1,1]
-        C[2,1] = α * (A[2,1] * B[1,1] + A[2,2] * B[2,1] + A[2,3] * B[3,1]) + β * C[2,1]
-        C[3,1] = α * (A[3,1] * B[1,1] + A[3,2] * B[2,1] + A[3,3] * B[3,1]) + β * C[3,1]
-        C[1,2] = α * (A[1,1] * B[1,2] + A[1,2] * B[2,2] + A[1,3] * B[3,2]) + β * C[1,2]
-        C[2,2] = α * (A[2,1] * B[1,2] + A[2,2] * B[2,2] + A[2,3] * B[3,2]) + β * C[2,2]
-        C[3,2] = α * (A[3,1] * B[1,2] + A[3,2] * B[2,2] + A[3,3] * B[3,2]) + β * C[3,2]
-        C[1,3] = α * (A[1,1] * B[1,3] + A[1,2] * B[2,3] + A[1,3] * B[3,3]) + β * C[1,3]
-        C[2,3] = α * (A[2,1] * B[1,3] + A[2,2] * B[2,3] + A[2,3] * B[3,3]) + β * C[2,3]
-        C[3,3] = α * (A[3,1] * B[1,3] + A[3,2] * B[2,3] + A[3,3] * B[3,3]) + β * C[3,3]
-    end
-
-    return C
-end
-
-# M ← α x yᵀ + β M (3×3 rank-1 update)
-function ger3!(M, x, y, α, β)
-    if iszero(β)
-        M[1,1] = α * x[1] * y[1]
-        M[2,1] = α * x[2] * y[1]
-        M[3,1] = α * x[3] * y[1]
-        M[1,2] = α * x[1] * y[2]
-        M[2,2] = α * x[2] * y[2]
-        M[3,2] = α * x[3] * y[2]
-        M[1,3] = α * x[1] * y[3]
-        M[2,3] = α * x[2] * y[3]
-        M[3,3] = α * x[3] * y[3]
-    else
-        M[1,1] = α * x[1] * y[1] + β * M[1,1]
-        M[2,1] = α * x[2] * y[1] + β * M[2,1]
-        M[3,1] = α * x[3] * y[1] + β * M[3,1]
-        M[1,2] = α * x[1] * y[2] + β * M[1,2]
-        M[2,2] = α * x[2] * y[2] + β * M[2,2]
-        M[3,2] = α * x[3] * y[2] + β * M[3,2]
-        M[1,3] = α * x[1] * y[3] + β * M[1,3]
-        M[2,3] = α * x[2] * y[3] + β * M[2,3]
-        M[3,3] = α * x[3] * y[3] + β * M[3,3]
-    end
-
-    return M
-end
-
-# 3-element BLAS-style operations
-function copy3!(y::AbstractVector, x::AbstractVector)
-    y[1] = x[1]
-    y[2] = x[2]
-    y[3] = x[3]
-    return y
-end
-
-function axpy3!(a, x::AbstractVector, y::AbstractVector)
-    y[1] += a * x[1]
-    y[2] += a * x[2]
-    y[3] += a * x[3]
-    return y
-end
-
-function axpby3!(a, x::AbstractVector, b, y::AbstractVector)
-    y[1] = a * x[1] + b * y[1]
-    y[2] = a * x[2] + b * y[2]
-    y[3] = a * x[3] + b * y[3]
-    return y
-end
-
-function rmul3!(x::AbstractVector, a)
-    x[1] *= a
-    x[2] *= a
-    x[3] *= a
-    return x
-end
-
-function rmul3!(M::AbstractMatrix, a)
-    M[1,1] *= a; M[2,1] *= a; M[3,1] *= a
-    M[1,2] *= a; M[2,2] *= a; M[3,2] *= a
-    M[1,3] *= a; M[2,3] *= a; M[3,3] *= a
-    return M
-end
-
-function fill3!(x::AbstractVector, a)
-    x[1] = a
-    x[2] = a
-    x[3] = a
-    return x
-end
-
-function fill3!(M::AbstractMatrix, a)
-    M[1,1] = a; M[2,1] = a; M[3,1] = a
-    M[1,2] = a; M[2,2] = a; M[3,2] = a
-    M[1,3] = a; M[2,3] = a; M[3,3] = a
-    return M
-end
-
-function dot3(x::AbstractVector, y::AbstractVector)
-    return x[1] * y[1] + x[2] * y[2] + x[3] * y[3]
-end
-
-function norm3(x::AbstractVector)
-    return sqrt(x[1]^2 + x[2]^2 + x[3]^2)
-end
-
-# Solve 2×2 system [a b; c d] [x; y] = [e; f]
-function solve2x2(a::T, b::T, c::T, d::T, e::T, f::T) where {T}
-    det = a * d - b * c
-    return (d * e - b * f) / det, (a * f - c * e) / det
-end
-
-# Binary search for last t in [lo, hi] where f(t) is true
-function binarysearchlast(f, lo::T, hi::T, tol::T, itmax::Int) where {T}
-    for _ in 1:itmax
-        mid = (lo + hi) / 2
-
-        if f(mid)
-            lo = mid
-        else
-            hi = mid
-        end
-
-        if hi - lo < tol
-            break
-        end
-    end
-
-    return lo
 end
 
 #
@@ -221,12 +55,12 @@ end
 #
 
 # Barrier argument ψ(x) = x₂ log(x₁/x₂) - x₃
-function exp_psi(x::AbstractVector{T}) where {T}
+function exppsi(x::AbstractVector{T}) where {T}
     return x[2] * log(x[1] / x[2]) - x[3]
 end
 
 # Gradient of ψ: ψ'(x) = (x₂/x₁, log(x₁/x₂) - 1, -1)
-function exp_psi_grad!(g::AbstractVector{T}, x::AbstractVector{T}) where {T}
+function exppsigrad!(g::AbstractVector{T}, x::AbstractVector{T}) where {T}
     g[1] = x[2] / x[1]
     g[2] = log(x[1] / x[2]) - one(T)
     g[3] = -one(T)
@@ -267,9 +101,9 @@ end
 #
 
 # Barrier gradient: F'(x) = -ψ'(x)/ψ(x) - (1/x₁, 1/x₂, 0)
-function exp_barrier_grad!(g::AbstractVector{T}, x::AbstractVector{T}) where {T}
-    ψ = exp_psi(x)
-    exp_psi_grad!(g, x)
+function expbarrgrad!(g::AbstractVector{T}, x::AbstractVector{T}) where {T}
+    ψ = exppsi(x)
+    exppsigrad!(g, x)
 
     # g = -ψ'/ψ - h' where h' = (1/x₁, 1/x₂, 0)
     g[1] = -g[1] / ψ - inv(x[1])
@@ -293,9 +127,9 @@ end
 #     [     0              0            -1/ψ             ]
 #
 
-function exp_barrier_factor!(R::AbstractMatrix{T}, x::AbstractVector{T}) where {T}
+function expbarr!(R::AbstractMatrix{T}, x::AbstractVector{T}) where {T}
     x1, x2 = x[1], x[2]
-    ψ = exp_psi(x)
+    ψ = exppsi(x)
     ψinv = inv(ψ)
 
     σ = sqrt(one(T) + 2 * x2 * ψinv)
@@ -318,44 +152,13 @@ function exp_barrier_factor!(R::AbstractMatrix{T}, x::AbstractVector{T}) where {
     return R
 end
 
-#
-# Solve F''(x) v = b using the analytic factor R (Change 1)
-#
-# Since F'' = R Rᵀ, we solve R w = b then Rᵀ v = w.
-# Structure of R allows efficient 2×2 solves.
-#
-# Forward (R w = b):
-#   w₃ = b₃ / r₃₃
-#   solve 2×2 [r₁₁ r₁₂; r₂₁ r₂₂] [w₁; w₂] = [b₁ - r₁₃ w₃; b₂ - r₂₃ w₃]
-#
-# Backward (Rᵀ v = w):
-#   solve 2×2 [r₁₁ r₂₁; r₁₂ r₂₂] [v₁; v₂] = [w₁; w₂]
-#   v₃ = (w₃ - r₁₃ v₁ - r₂₃ v₂) / r₃₃
-#
-
-function expsolve!(R::AbstractMatrix{T}, b::AbstractVector{T}) where {T}
-    r11, r12, r13 = R[1,1], R[1,2], R[1,3]
-    r21, r22, r23 = R[2,1], R[2,2], R[2,3]
-    r33 = R[3,3]
-
-    # Forward: R w = b
-    w3 = b[3] / r33
-    w1, w2 = solve2x2(r11, r12, r21, r22, b[1] - r13 * w3, b[2] - r23 * w3)
-
-    # Backward: Rᵀ v = w
-    v1, v2 = solve2x2(r11, r21, r12, r22, w1, w2)
-    v3 = (w3 - r13 * v1 - r23 * v2) / r33
-
-    b[1], b[2], b[3] = v1, v2, v3
-    return b
-end
 
 #
 # Third-order directional derivative F'''(x)[u] as a 3×3 symmetric matrix
 #
 
-function exp_barrier_hess_dir!(D::AbstractMatrix{T}, x::AbstractVector{T}, u::AbstractVector{T}) where {T}
-    ψ = exp_psi(x)
+function expbarrhess!(D::AbstractMatrix{T}, x::AbstractVector{T}, u::AbstractVector{T}) where {T}
+    ψ = exppsi(x)
     x1, x2 = x[1], x[2]
     u1, u2, u3 = u[1], u[2], u[3]
 
@@ -421,11 +224,11 @@ end
 # Cone membership predicates
 #
 
-function in_exp_primal(x::AbstractVector{T}) where {T}
-    x[1] > 0 && x[2] > 0 && exp_psi(x) > 0
+function expincone(x::AbstractVector{T}) where {T}
+    x[1] > 0 && x[2] > 0 && exppsi(x) > 0
 end
 
-function in_exp_dual(z::AbstractVector{T}) where {T}
+function expindual(z::AbstractVector{T}) where {T}
     z[1] > 0 && z[3] < 0 && ℯ * z[1] >= -z[3] * exp(z[2] / z[3])
 end
 
@@ -441,9 +244,9 @@ end
 #   - Tighter line search floor (1e-14) to handle boundary approaches
 #
 
-function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter::Int=50, tol::T=T(1e-12)) where {T}
+function expdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter::Int=50, tol::T=T(1e-12)) where {T}
     # Warm start: use incoming xs if interior, else cold start
-    if !in_exp_primal(xs)
+    if !expincone(xs)
         # Smart cold start: for EXP cone, x̃ satisfies F'(x̃) = -s.
         # At the central path identity point e ≈ (1.29, 0.81, -0.83), F'(e) = -e.
         # For general s, scale e by a factor that approximately matches ‖s‖.
@@ -453,7 +256,7 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
         xs[2] = scale * T(0.81)
         xs[3] = scale * T(-0.83)
         # Ensure interior
-        while !in_exp_primal(xs)
+        while !expincone(xs)
             xs[1] *= 2
             xs[2] *= 2
             xs[3] -= one(T)
@@ -469,13 +272,13 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
 
     for iter in 1:maxiter
         # Residual: F'(x̃) + s
-        exp_barrier_grad!(g, xs)
+        expbarrgrad!(g, xs)
         axpy3!(1, s, g)
 
         # Newton step: Δ = -F''(x̃)⁻¹ (F'(x̃) + s)
-        exp_barrier_factor!(R, xs)
+        expbarr!(R, xs)
         axpby!(-1, g, 0, Δ)
-        expsolve!(R, Δ)
+        ldiv3!(R, Δ); ldiv3!(R', Δ)
 
         # Newton decrement = ‖R'Δ‖ (the natural self-concordant metric)
         mul3!(RtΔ, R', Δ)
@@ -491,7 +294,7 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
         while θ > T(1e-14)
             copy3!(xs_new, xs)
             axpy3!(θ, Δ, xs_new)
-            if in_exp_primal(xs_new)
+            if expincone(xs_new)
                 copy3!(xs, xs_new)
                 break
             end
@@ -527,7 +330,7 @@ end
 #
 # Reference: Dahl & Andersen, Math. Program. 194 (2022), eq. (32).
 #
-function exp_bfgs_t(
+function expbfgs(
         R::AbstractMatrix{T},
         xs::AbstractVector{T},
         ss::AbstractVector{T},
@@ -588,12 +391,12 @@ function expscale!(
     δs = zeros(T, 3)
 
     # Stage 1: Analytic factor R(x), shadow dual s̃ = -F'(x)
-    exp_barrier_factor!(R, x)
-    exp_barrier_grad!(ss, x)
+    expbarr!(R, x)
+    expbarrgrad!(ss, x)
     lmul!(-1, ss)
 
     # Stage 2: Shadow primal x̃ (Newton, uses R internally)
-    exp_shadow_primal!(xs, s)
+    expdualgrad!(xs, s)
 
     # Block-local μ and μ̃
     μv = dot3(x, s) / 3
@@ -630,10 +433,10 @@ function expscale!(
         mul3!(M, R, R', μv, 0)
     else
         # Normalize z (safe since rel_z > sqrt(eps) implies nz > 0)
-        ldiv!(nz, z)
+        ldiv3!(nz, z)
 
         # Stage 4: BFGS t via contracted form with cancellation-free d (Change 4+5)
-        t = exp_bfgs_t(R, xs, ss, z, x, μv, μt)
+        t = expbfgs(R, xs, ss, z, x, μv, μt)
 
         if !(t > 0) || !isfinite(t)
             # BFGS construction degraded off-central; μF'' is always PD.
@@ -671,7 +474,7 @@ function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}
 end
 
 #
-# Corrector (uses expsolve! for F''⁻¹, Change 1)
+# Corrector (uses ldiv3! for F''⁻¹)
 #
 # r = -d - σμ·F'(p) - η
 # where η = -½ F'''(p)[Δpₐ, F''(p)⁻¹Δdₐ]
@@ -694,14 +497,13 @@ function expcorr!(
     D  = zeros(T, 3, 3)
 
     # F'(p)
-    exp_barrier_grad!(Fp, p)
+    expbarrgrad!(Fp, p)
 
-    # v = F''(p)⁻¹Δd using expsolve! (Change 1)
-    copy3!(v, Δd)
-    expsolve!(R, v)
+    # v = F''(p)⁻¹Δd = (RR')⁻¹Δd
+    ldiv3!(v, R, Δd); ldiv3!(R', v)
 
     # η = -½ F'''(p)[Δp, v]
-    exp_barrier_hess_dir!(D, p, Δp)
+    expbarrhess!(D, p, Δp)
     mul3!(η, D, v, -0.5, 0)
 
     # r = -d - σμ·F'(p) - η
@@ -728,30 +530,18 @@ end
 # Max step by bisection on cone membership
 #
 
-function expmaxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+function expmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
     w = zeros(T, 3)
 
     τ = binarysearchlast(zero(T), one(T), eps(T), 53) do τ
-        copyto!(w, x)
-        axpy!(τ, Δx, w)
-        return in_exp_primal(w)
-    end
-
-    return γ * τ
-end
-
-function expmaxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
-    w = zeros(T, 3)
-
-    τ = binarysearchlast(zero(T), one(T), eps(T), 53) do τ
-        copyto!(w, x)
-        axpy!(τ, Δx, w)
-        return in_exp_dual(w)
+        copy3!(w, x)
+        axpy3!(τ, Δx, w)
+        return incone(w)
     end
 
     return γ * τ
 end
 
 function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::ExponentialConeCache{T}) where {T}
-    return expmaxstep_prim(p, Δp, γ), expmaxstep_dual(d, Δd, γ)
+    return expmaxstep(expincone, p, Δp, γ), expmaxstep(expindual, d, Δd, γ)
 end
