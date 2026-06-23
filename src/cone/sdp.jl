@@ -283,13 +283,14 @@ end
 #   M = L⁻¹ ΔX L⁻ᵀ.
 #
 # This matrix is positive definite if and
-# only if M is, so the solution is equal to
+# only if M is, so the solution is given by
 #
-#   τ = 1 / max {1, -λ},
+#   τ⁻¹ = max {1, -λ},
 #
 # where λ is the smallest eigenvalue of L⁻¹ ΔX L⁻ᵀ.
 function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}) where {T}
     n = size(L, 1)
+
     M = zeros(T, n, n)
     W = Vector{T}(undef, n)
     work = zeros(T, 1)
