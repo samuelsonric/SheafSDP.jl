@@ -64,20 +64,20 @@ function corr!(
     return poscorr!(r, p, d, Δp, Δd, σμ)
 end
 
-function posmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+function posmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
     τ = one(T)
 
     for i in eachindex(x)
         Δxi = Δx[i]
 
         if Δxi < 0
-            τ = min(τ, -γ * x[i] / Δxi)
+            τ = min(τ, -x[i] / Δxi)
         end
     end
 
     return τ
 end
 
-function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::PositiveConeCache) where {T}
-    return posmaxstep(p, Δp, γ), posmaxstep(d, Δd, γ)
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, ::PositiveConeCache) where {T}
+    return posmaxstep(p, Δp), posmaxstep(d, Δd)
 end

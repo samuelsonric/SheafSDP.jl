@@ -47,10 +47,12 @@ Compute the H-applied corrector term directly.
 function corr! end
 
 """
-    maxsteps(p, Δp, d, Δd, γ, cache) -> (τp, τd)
+    maxsteps(p, Δp, d, Δd, cache) -> (τp, τd)
 
 Compute the maximum primal and dual steps τ ∈ (0,1] such that
 p + τp·Δp and d + τd·Δd stay in the cone interior.
+
+The IPM applies a step fraction γ after calling this function.
 """
 function maxsteps end
 

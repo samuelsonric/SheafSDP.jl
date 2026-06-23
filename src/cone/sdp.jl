@@ -274,7 +274,7 @@ function corr!(
     return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
 end
 
-function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}) where {T}
     n = size(L, 1)
     M = zeros(T, n, n)
     W = Vector{T}(undef, n)
@@ -294,11 +294,11 @@ function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}, γ::Real) whe
     #
     λ = eigmin!(M, W, work, iwork)
 
-    return γ / max(γ, -λ)
+    return one(T) / max(one(T), -λ)
 end
 
-function maxsteps(::AbstractVector{T}, Δp::AbstractVector{T}, ::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, cache::SemidefiniteConeCache{T}) where {T}
-    τp = sdpmaxstep(LowerTriangular(cache.LP), Δp, γ)
-    τd = sdpmaxstep(LowerTriangular(cache.LD), Δd, γ)
+function maxsteps(::AbstractVector{T}, Δp::AbstractVector{T}, ::AbstractVector{T}, Δd::AbstractVector{T}, cache::SemidefiniteConeCache{T}) where {T}
+    τp = sdpmaxstep(LowerTriangular(cache.LP), Δp)
+    τd = sdpmaxstep(LowerTriangular(cache.LD), Δd)
     return τp, τd
 end

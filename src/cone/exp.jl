@@ -530,7 +530,7 @@ end
 # Max step by bisection on cone membership
 #
 
-function expmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+function expmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
     w = zeros(T, 3)
 
     τ = binarysearchlast(zero(T), one(T), eps(T), 53) do τ
@@ -539,9 +539,9 @@ function expmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Re
         return incone(w)
     end
 
-    return γ * τ
+    return τ
 end
 
-function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::ExponentialConeCache{T}) where {T}
-    return expmaxstep(expincone, p, Δp, γ), expmaxstep(expindual, d, Δd, γ)
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, ::ExponentialConeCache{T}) where {T}
+    return expmaxstep(expincone, p, Δp), expmaxstep(expindual, d, Δd)
 end

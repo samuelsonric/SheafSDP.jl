@@ -47,6 +47,6 @@ function corr!(
     return r
 end
 
-function maxsteps(::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::Real, ::CofreeConeCache) where {T}
+function maxsteps(::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::CofreeConeCache) where {T}
     return one(T), one(T)
 end

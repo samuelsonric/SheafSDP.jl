@@ -527,7 +527,7 @@ end
 # Max step by bisection on cone membership
 #
 
-function powmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, α::T) where {T}
+function powmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, α::T) where {T}
     w = zeros(T, 3)
 
     τ = binarysearchlast(zero(T), one(T), eps(T), 53) do τ
@@ -536,10 +536,10 @@ function powmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Re
         return incone(w, α)
     end
 
-    return γ * τ
+    return τ
 end
 
-function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, cache::PowerConeCache{T}) where {T}
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, cache::PowerConeCache{T}) where {T}
     α = cache.cone.α
-    return powmaxstep(powincone, p, Δp, γ, α), powmaxstep(powindual, d, Δd, γ, α)
+    return powmaxstep(powincone, p, Δp, α), powmaxstep(powindual, d, Δd, α)
 end

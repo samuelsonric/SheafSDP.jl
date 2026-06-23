@@ -232,7 +232,7 @@ function corr!(
     soccorr!(r, cache.w, cache.β[], p, Δp, Δd, σμ)
 end
 
-function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) where {T}
+function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
     n = length(x)
 
     # compute scalars
@@ -257,7 +257,7 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
 
     b *= 2
 
-    # find the largest number τ < 1 such that
+    # find the largest number τ ≤ 1 such that
     #
     #   1. a τ² +   b τ + c  ≥ 0
     #   2.        Δx₁ τ + x₁ ≥ 0
@@ -290,11 +290,11 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
             τ1 = b ≥ 0 ? q / a : c / q
 
             if τ1 > 0
-                τ = min(τ, γ * τ1)
+                τ = min(τ, τ1)
             end
         end
     elseif b < -eps(T)
-        τ = min(τ, -γ * c / b)
+        τ = min(τ, -c / b)
     end
     #
     # ensure that
@@ -302,12 +302,12 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
     #   Δx₁ τ + x₁ ≥ 0
     #
     if Δx[1] < 0
-        τ = min(τ, -γ * x[1] / Δx[1])
+        τ = min(τ, -x[1] / Δx[1])
     end
 
     return τ
 end
 
-function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::SecondOrderConeCache{T}) where {T}
-    return socmaxstep(p, Δp, γ), socmaxstep(d, Δd, γ)
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, ::SecondOrderConeCache{T}) where {T}
+    return socmaxstep(p, Δp), socmaxstep(d, Δd)
 end

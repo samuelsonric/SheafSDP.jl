@@ -201,12 +201,12 @@ function maxsteps(p, d, Δp, Δd, caches, cones, B; frac=0.99)
     for v in vtxs(B)
         r = colrange(B, v)
         cv = cache(caches, v, cones[v])
-        τp_v, τd_v = maxsteps(view(p, r), view(Δp, r), view(d, r), view(Δd, r), frac, cv)
+        τp_v, τd_v = maxsteps(view(p, r), view(Δp, r), view(d, r), view(Δd, r), cv)
         τp = min(τp, τp_v)
         τd = min(τd, τd_v)
     end
 
-    return τp, τd
+    return frac * τp, frac * τd
 end
 
 #
