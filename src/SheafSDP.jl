@@ -13,7 +13,7 @@ using CliqueTrees.Multifrontal: ChordalLDLt, ldlt!, ChordalCholesky, cholesky!, 
                                  DivisionWorkspace, FactorizationWorkspace, symbolic, NaturalPermutation
 using Krylov: cg!, CgWorkspace, cr!, CrWorkspace
 using LinearOperators: LinearOperator
-using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nblks, narcs, blocksparse, selectvtxs, halfselectvtxs
+using BlockSparseArrays: BlockSparseMatrix, block, colrange, rowrange, srcrange, nvtxs, vtxs, ncols, nrows, nouts, outs, nbnzs, narcs, blocksparse, selectvtxs, halfselectvtxs
 using CommonSolve: init, solve!, solve
 using Base: oneto
 
@@ -28,8 +28,7 @@ include("ipm.jl")
 export sheaf, solve_kkt!, factor_kkt!
 export IPMProblem, IPMSettings, IPMSolver, IPMResult, IPMHistory, IPMStatus, OPTIMAL, NEAR_OPTIMAL, STALLED, NUMERICAL_FAILURE, ITERATION_LIMIT
 export step!
-export Cone, SDP, POS, SOC, NOC, EXP
-export KKTSettings, UzawaSettings, ADMMSettings
-export PreconditionerSettings, NoPrecSettings, JacobiSettings, SSORSettings, ICholSettings
+export Cone, SemidefiniteCone, PositiveCone, SecondOrderCone, CofreeCone, ExponentialCone
+export KKTSettings, UzawaSettings
 
 end # module SheafSDP

@@ -145,12 +145,12 @@ function run_benchmark(; raug=1e5, scale=1, ε_R=0.01, λ=1.0)
             end
         end
 
-        # Cones: NOC for x, POS for x+/x-
-        cones = Vector{Symbol}(undef, 3*N)
+        # Cones: CofreeCone for x, PositiveCone for x+/x-
+        cones = Vector{Cone}(undef, 3*N)
         for i in 1:N
-            cones[col_x(i)] = :NOC
-            cones[col_xp(i)] = :POS
-            cones[col_xm(i)] = :POS
+            cones[col_x(i)] = CofreeCone()
+            cones[col_xp(i)] = PositiveCone()
+            cones[col_xm(i)] = PositiveCone()
         end
 
         prob = IPMProblem(c_vec, g, B, Q, cones)

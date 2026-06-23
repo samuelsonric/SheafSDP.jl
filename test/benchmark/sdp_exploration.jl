@@ -282,10 +282,10 @@ function build_passivity_problem(N, n_i, m_i, d_e, edges; seed=42)
     Q = SheafSDP.allocblockdiag(B_mat)
     fill!(Q, zero(T))
 
-    cones = Vector{Symbol}(undef, 2N)
+    cones = Vector{Cone}(undef, 2N)
     for i in 1:N
-        cones[col_G(i)] = :SDP
-        cones[col_S(i)] = :SDP
+        cones[col_G(i)] = SheafSDP.SemidefiniteCone()
+        cones[col_S(i)] = SheafSDP.SemidefiniteCone()
     end
 
     return IPMProblem(c_vec, g_vec, B_mat, Q, cones), systems, interface_maps

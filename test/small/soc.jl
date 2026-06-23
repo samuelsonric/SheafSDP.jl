@@ -55,7 +55,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
 
         # SOC constraint: ‖u‖₂ ≤ s
         for i in 1:N, t in 1:T-1
-            @constraint(model, [s[i,t]; u[i,t,:]] in SecondOrderCone())
+            @constraint(model, [s[i,t]; u[i,t,:]] in JuMP.SecondOrderCone())
         end
 
         # Box constraint on control
@@ -164,15 +164,15 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
 
         # Cones
         nv = N * blocks_per_agent
-        cones = Vector{Symbol}(undef, nv)
+        cones = Vector{SheafSDP.Cone}(undef, nv)
         for i in 1:N
             for t in 1:T
-                cones[col_x(i, t)] = :NOC
+                cones[col_x(i, t)] = SheafSDP.CofreeCone()
             end
             for t in 1:T-1
-                cones[col_ζ(i, t)] = :SOC   # (s; u) ∈ Q^{1+nu}
-                cones[col_sp(i, t)] = :POS
-                cones[col_sm(i, t)] = :POS
+                cones[col_ζ(i, t)] = SheafSDP.SecondOrderCone()   # (s; u) ∈ Q^{1+nu}
+                cones[col_sp(i, t)] = SheafSDP.PositiveCone()
+                cones[col_sm(i, t)] = SheafSDP.PositiveCone()
             end
         end
 

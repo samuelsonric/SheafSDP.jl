@@ -9,28 +9,12 @@
 
 @enum IPMStatus OPTIMAL NEAR_OPTIMAL STALLED NUMERICAL_FAILURE ITERATION_LIMIT
 
-struct IPMProblem{T, I}
+struct IPMProblem{T, I, C<:Cone}
     c::Vector{T}
     g::Vector{T}
     B::BlockSparseMatrix{T, I}
     Q::BlockSparseMatrix{T, I}
-    cones::Vector{Symbol}
-end
-
-function tocone(s::Symbol)
-    if s === :SDP
-        return SDP()
-    elseif s === :POS
-        return POS()
-    elseif s === :SOC
-        return SOC()
-    elseif s === :NOC
-        return NOC()
-    elseif s === :EXP
-        return EXP()
-    else
-        error("Unknown cone: $s")
-    end
+    cones::Vector{C}
 end
 
 @kwdef struct IPMSettings{T}
@@ -217,8 +201,9 @@ function maxsteps(p, d, Δp, Δd, caches, cones, B; frac=0.99)
     for v in vtxs(B)
         r = colrange(B, v)
         cv = cache(caches, v, cones[v])
-        τp = min(τp, maxstep_prim(view(p, r), view(Δp, r), frac, cv))
-        τd = min(τd, maxstep_dual(view(d, r), view(Δd, r), frac, cv))
+        τp_v, τd_v = maxsteps(view(p, r), view(Δp, r), view(d, r), view(Δd, r), frac, cv)
+        τp = min(τp, τp_v)
+        τd = min(τd, τd_v)
     end
 
     return τp, τd
@@ -326,7 +311,7 @@ end
 
 function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
     c0, g, B0, Q0 = prob.c, prob.g, prob.B, prob.Q
-    cones0 = map(tocone, prob.cones)
+    cones0 = prob.cones
 
     kktset = settings.kkt
     R, P, B, wrk = make_kkt(kktset, B0)
@@ -358,6 +343,9 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
 
     H = allocblockdiag(B)
     caches = Caches(cones, B)
+    for v in vtxs(B)
+        init_cache!(cache(caches, v, cones[v]))
+    end
     sp = zeros(T, n)
     sy = zeros(T, m)
     dp = zeros(T, n)

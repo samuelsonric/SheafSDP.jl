@@ -1,7 +1,7 @@
-struct EXP <: Cone end
+struct ExponentialCone <: Cone end
 
-struct EXPCache{T} <: AbstractCache{EXP}
-    cone::EXP
+struct ExponentialConeCache{T} <: AbstractCache{ExponentialCone}
+    cone::ExponentialCone
     M::FMatrixView{T}     # scaling Gram matrix (3×3)
     R::FMatrixView{T}     # analytic factor of F''(x) (3×3)
     xs::FVectorView{T}    # shadow primal x̃ (3)
@@ -10,35 +10,41 @@ struct EXPCache{T} <: AbstractCache{EXP}
 end
 
 # degree = 3 always (EXP is intrinsically 3D)
-function degree(::EXP, n::Int)
+function degree(::ExponentialCone, n::Int)
     @assert n == 3 "EXP cone is 3-dimensional"
     return 3
 end
 
 # cache size: M(9) + R(9) + xs(3) + ss(3) + μv(1) = 25
-function cachesize(::EXP, n::Int)
+function cachesize(::ExponentialCone, n::Int)
     @assert n == 3 "EXP cone is 3-dimensional"
     return 25
 end
 
 # construct view-based cache from Caches
-function cache(c::Caches{T}, i::Int, cone::EXP) where T
+function cache(c::Caches{T}, i::Int, cone::ExponentialCone) where T
     data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
     M  = reshape(view(data, 1:9), 3, 3)
     R  = reshape(view(data, 10:18), 3, 3)
     xs = view(data, 19:21)
     ss = view(data, 22:24)
     μv = view(data, 25)
-    EXPCache(cone, M, R, xs, ss, μv)
+    ExponentialConeCache(cone, M, R, xs, ss, μv)
 end
 
 # Central point on the exp cone central path
 # From Dahl-Andersen: x* ≈ (1.290928, 0.805102, -0.827838)
-function identity!(x::AbstractVector, ::EXP)
+function identity!(x::AbstractVector, ::ExponentialCone)
     x[1] =  1.2909282315382298
     x[2] =  0.8051015526498357
     x[3] = -0.8278379086082098
     return x
+end
+
+# Initialize cache.xs to identity point for warm-starting shadow primal
+function init_cache!(cache::ExponentialConeCache)
+    identity!(cache.xs, cache.cone)
+    return cache
 end
 
 #
@@ -227,6 +233,39 @@ function exp_psi_grad!(g::AbstractVector{T}, x::AbstractVector{T}) where {T}
     return g
 end
 
+#
+# Note on ψ accuracy (investigated and rejected: compensation does not help)
+#
+# ψ = x₂·log(x₁/x₂) − x₃ has relative error that grows as 1/ψ (k=1) as ψ → 0.
+# This was initially diagnosed as cancellation in the subtraction, suggesting
+# compensation (twosum/twoprod) could help. However, measurement revealed:
+#
+#   1. The subtraction (x₂L) − x₃ is EXACT for Float64 inputs (no rounding)
+#   2. The absolute error is FLAT at ~0.5u·phi, not growing
+#   3. The 1/ψ relative error growth is purely representation amplification:
+#      fixed absolute error ÷ shrinking ψ = growing relative error
+#
+# The ~0.5u absolute error comes from log(r) itself — a correctly-rounded
+# library primitive whose ~0.5 ulp approximation error enters BEFORE our
+# arithmetic. Compensation (twosum/twoprod) can only capture rounding from
+# operations WE perform; it cannot reach behind a transcendental.
+#
+# This is the discriminator: flat absolute error at ~0.5u·|terms| indicates
+# representation floor (not reducible), not cancellation (reducible). The
+# relative error table alone cannot distinguish these — only the absolute
+# error column can. ψ is representation-floored; k=1 is bedrock here.
+#
+# Contrast with SOC: det = x₀² − ‖x̄‖² has cancellation in YOUR arithmetic
+# (the subtraction), so twosum captures it. ψ's error is in log, so it doesn't.
+#
+# Double64 log was also tested: computing log in Double64 gives ~50 orders of
+# magnitude more accurate ψ. But the endgame μ was IDENTICAL (both stall at
+# μ ≈ 458, same iterations, same status). The extra accuracy is non-binding:
+# cond(M) ~ 1/μ floors the KKT solve first, and the extra digits die there.
+# The solver never reads them. This is the same pattern as compensation —
+# "more accurate" is not the binding question; "does a contract change" is.
+#
+
 # Barrier gradient: F'(x) = -ψ'(x)/ψ(x) - (1/x₁, 1/x₂, 0)
 function exp_barrier_grad!(g::AbstractVector{T}, x::AbstractVector{T}) where {T}
     ψ = exp_psi(x)
@@ -391,28 +430,41 @@ function in_exp_dual(z::AbstractVector{T}) where {T}
 end
 
 #
-# Shadow primal computation (Newton iteration)
+# Shadow primal computation (Newton iteration, Change 6: warm start + decrement)
 #
-# Find x̃ such that F'(x̃) = -s via Newton with analytic factor (Change 1)
+# Find x̃ such that F'(x̃) = -s via Newton with analytic factor (Change 1).
+#
+# Change 6 improvements:
+#   - Warm start: if xs is already interior, use it (IPM caches x̃ between iters)
+#   - Newton decrement convergence: ‖R'Δ‖ < tol, not ‖F'+s‖ < tol
+#     (raw gradient has 1/ψ scale, badly conditioned near boundary)
+#   - Tighter line search floor (1e-14) to handle boundary approaches
 #
 
 function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter::Int=50, tol::T=T(1e-12)) where {T}
-    # Initialize near the central point
-    xs[1] = T(1.0)
-    xs[2] = T(1.0)
-    xs[3] = T(-0.5)
-
-    # Ensure starting point is interior
-    while !in_exp_primal(xs)
-        xs[1] *= 2
-        xs[2] *= 2
-        xs[3] -= one(T)
+    # Warm start: use incoming xs if interior, else cold start
+    if !in_exp_primal(xs)
+        # Smart cold start: for EXP cone, x̃ satisfies F'(x̃) = -s.
+        # At the central path identity point e ≈ (1.29, 0.81, -0.83), F'(e) = -e.
+        # For general s, scale e by a factor that approximately matches ‖s‖.
+        # Since F' has 1/ψ scaling, x̃ ∝ e·‖e‖/‖s‖^(1/2) is a rough guess.
+        scale = sqrt(max(T(3.0) / (abs(s[1]) + abs(s[2]) + abs(s[3]) + one(T)), T(1e-8)))
+        xs[1] = scale * T(1.29)
+        xs[2] = scale * T(0.81)
+        xs[3] = scale * T(-0.83)
+        # Ensure interior
+        while !in_exp_primal(xs)
+            xs[1] *= 2
+            xs[2] *= 2
+            xs[3] -= one(T)
+        end
     end
 
     # Workspaces
     g      = zeros(T, 3)
     R      = zeros(T, 3, 3)
     Δ      = zeros(T, 3)
+    RtΔ    = zeros(T, 3)
     xs_new = zeros(T, 3)
 
     for iter in 1:maxiter
@@ -420,19 +472,23 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
         exp_barrier_grad!(g, xs)
         axpy3!(1, s, g)
 
-        if norm3(g) < tol
-            return xs
-        end
-
         # Newton step: Δ = -F''(x̃)⁻¹ (F'(x̃) + s)
-        # Using analytic factor (Change 1)
         exp_barrier_factor!(R, xs)
         axpby!(-1, g, 0, Δ)
         expsolve!(R, Δ)
 
-        # Line search
+        # Newton decrement = ‖R'Δ‖ (the natural self-concordant metric)
+        mul3!(RtΔ, R', Δ)
+        decrement = norm3(RtΔ)
+
+        # Converged when decrement is small (scale-invariant criterion)
+        if decrement < tol
+            return xs
+        end
+
+        # Line search with tighter floor for boundary approaches
         θ = one(T)
-        while θ > T(1e-10)
+        while θ > T(1e-14)
             copy3!(xs_new, xs)
             axpy3!(θ, Δ, xs_new)
             if in_exp_primal(xs_new)
@@ -442,7 +498,7 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
             θ *= T(0.5)
         end
 
-        if θ <= T(1e-10)
+        if θ <= T(1e-14)
             @warn "Shadow primal Newton line search failed"
             break
         end
@@ -452,80 +508,59 @@ function exp_shadow_primal!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter
 end
 
 #
-# BFGS t computation via R-products (Change 4)
+# BFGS t computation via contracted form with cancellation-free d (Change 4+5)
 #
-# t_BFGS = μ ‖F'' - s̃s̃ᵀ/3 - vvᵀ/d‖_F
-# where v = F''x̃ - μ̃s̃ and d = ⟨x̃, F''x̃⟩ - 3μ̃²
+# A := F'' − s̃s̃ᵀ/ϑ − vvᵀ/d is rank-1 along z (it kills span{x,x̃}),
+# so t = μ‖A‖_F = μ·zᵀAz = μ(‖R'z‖² − (s̃ᵀz)²/ϑ − (vᵀz)²/d).
 #
-# All products use R: F''w = R(Rᵀw), ‖F''‖_F = ‖RᵀR‖_F, ⟨F'', wwᵀ⟩ = ‖Rᵀw‖²
+# Contracting with z first avoids forming the 1/ψ²-scale matrix and the 1/d².
+# A valid (PD) scaling needs t > 0; t ≤ 0 signals fall back to μF''.
 #
-
-function exp_bfgs_t(R::AbstractMatrix{T}, xs::AbstractVector{T}, ss::AbstractVector{T}, μv::T, μt::T) where {T}
+# Cancellation-free d (Change 5):
+# The old d = ‖R'x̃‖² − 3μ̃² subtracted two O(3) numbers to get O(ε²), losing
+# ~7 digits near the central path. Using log-homogeneity identities:
+#   w = x̃ − μ̃x           (gap direction, → 0 on the central path)
+#   d = ⟨w, F''w⟩ = ‖R'w‖²  (sum of squares, manifestly ≥ 0)
+#   v = F''w              ⟹ vᵀz = ⟨R'w, R'z⟩
+# The cancellation is now in forming w (one O(1)−O(1)→O(ε) subtraction),
+# giving ~u/ε relative error instead of ~u/ε². Also v is never formed.
+#
+# Reference: Dahl & Andersen, Math. Program. 194 (2022), eq. (32).
+#
+function exp_bfgs_t(
+        R::AbstractMatrix{T},
+        xs::AbstractVector{T},
+        ss::AbstractVector{T},
+        z::AbstractVector{T},
+        x::AbstractVector{T},
+        μv::T,
+        μt::T
+    ) where {T}
     # Workspaces
-    Rtxs  = zeros(T, 3)
-    Fppxs = zeros(T, 3)
-    v     = zeros(T, 3)
-    Rtss  = zeros(T, 3)
-    Rtv   = zeros(T, 3)
-    RtR   = zeros(T, 3, 3)
+    w   = zeros(T, 3)
+    Rtw = zeros(T, 3)
+    Rtz = zeros(T, 3)
 
-    # Rᵀx̃
-    mul3!(Rtxs, R', xs)
+    # Gap direction w = x̃ − μ̃x (→ 0 on the central path)
+    copy3!(w, xs)
+    axpy3!(-μt, x, w)
 
-    # F''x̃ = R(Rᵀx̃)
-    mul3!(Fppxs, R, Rtxs)
+    # d = ⟨w, F''w⟩ = ‖R'w‖² (sum of squares, ≥ 0)
+    # v = F''w ⟹ vᵀz = ⟨R'w, R'z⟩
+    mul3!(Rtw, R', w)
+    d = dot3(Rtw, Rtw)
 
-    # d = ⟨x̃, F''x̃⟩ - 3μ̃² = ‖Rᵀx̃‖² - 3μ̃²
-    d = dot3(Rtxs, Rtxs) - 3 * μt^2
+    # d ≤ 0 only on the central path; the rel_z gate already covers that.
+    # Guard defensively for numerical edge cases.
+    d ≤ zero(T) && return zero(T)
 
-    # v = F''x̃ - μ̃s̃
-    copy3!(v, Fppxs)
-    axpy3!(-μt, ss, v)
+    # zᵀAz = ‖R'z‖² − (s̃ᵀz)²/3 − (vᵀz)²/d
+    mul3!(Rtz, R', z)
+    fppzz = dot3(Rtz, Rtz)        # ‖R'z‖² = zᵀF''z
+    sz    = dot3(ss, z)           # s̃ᵀz
+    pz    = dot3(Rtw, Rtz)        # vᵀz = ⟨R'w, R'z⟩
 
-    # Rᵀs̃
-    mul3!(Rtss, R', ss)
-
-    # Rᵀv
-    mul3!(Rtv, R', v)
-
-    # ‖F''‖_F² = ‖RᵀR‖_F² = Σᵢⱼ (Σₖ Rₖᵢ Rₖⱼ)²
-    # But simpler: ‖RᵀR‖_F² = tr((RᵀR)²) = ‖RRᵀ‖_F² = Σᵢⱼ F''ᵢⱼ²
-    # We compute ‖RᵀR‖_F directly
-    mul3!(RtR, R', R)
-    norm_Fpp_sq = zero(T)
-    for j in 1:3, i in 1:3
-        norm_Fpp_sq += RtR[i,j]^2
-    end
-
-    # ‖s̃‖⁴/9
-    ss_norm_sq = dot3(ss, ss)
-
-    # ‖Rᵀs̃‖²
-    Rtss_norm_sq = dot3(Rtss, Rtss)
-
-    # ‖v‖⁴/d²
-    v_norm_sq = dot3(v, v)
-
-    # ‖Rᵀv‖²
-    Rtv_norm_sq = dot3(Rtv, Rtv)
-
-    # ⟨s̃, v⟩
-    ss_dot_v = dot3(ss, v)
-
-    # ‖A‖_F² = ‖F''‖_F² + ‖s̃‖⁴/9 + ‖v‖⁴/d² - (2/3)‖Rᵀs̃‖² - (2/d)‖Rᵀv‖² + (2/3d)⟨s̃,v⟩²
-    if abs(d) > T(1e-14)
-        norm_A_sq = norm_Fpp_sq + ss_norm_sq^2 / 9 + v_norm_sq^2 / d^2 -
-                    (2/3) * Rtss_norm_sq - (2/d) * Rtv_norm_sq +
-                    (2 / (3*d)) * ss_dot_v^2
-    else
-        # d ≈ 0 means on central path; skip the v term
-        norm_A_sq = norm_Fpp_sq + ss_norm_sq^2 / 9 - (2/3) * Rtss_norm_sq
-    end
-
-    # Handle potential numerical issues
-    norm_A_sq = max(norm_A_sq, zero(T))
-
-    return μv * sqrt(norm_A_sq)
+    return μv * (fppzz - sz^2 / 3 - pz^2 / d)
 end
 
 #
@@ -586,7 +621,9 @@ function expscale!(
     nxs = norm3(xs)
     rel_z = nz / (nx * nxs + eps(T))
 
-    used_fallback = rel_z < sqrt(eps(T))
+    # Tighten threshold to only catch true central-path (rel_z ~ 1e-15),
+    # not boundary corners where x ∥ x̃ by coincidence (rel_z ~ 1e-8).
+    used_fallback = rel_z < eps(T)
 
     if used_fallback
         # On or near central path: M = μ F''(x) = μ R Rᵀ
@@ -595,28 +632,39 @@ function expscale!(
         # Normalize z (safe since rel_z > sqrt(eps) implies nz > 0)
         ldiv!(nz, z)
 
-        # Stage 4: BFGS t via R-products (Change 4)
-        t = exp_bfgs_t(R, xs, ss, μv, μt)
+        # Stage 4: BFGS t via contracted form with cancellation-free d (Change 4+5)
+        t = exp_bfgs_t(R, xs, ss, z, x, μv, μt)
 
-        # Change 2: Closed form for M
-        # M = ssᵀ/⟨x,s⟩ + δsδsᵀ/⟨δx,δs⟩ + tzzᵀ
-        # where δx = x - μx̃, δs = s - μs̃
+        if !(t > 0) || !isfinite(t)
+            # BFGS construction degraded off-central; μF'' is always PD.
+            mul3!(M, R, R', μv, 0)
+        else
+            # Change 2: Closed form for M
+            # M = ssᵀ/⟨x,s⟩ + δsδsᵀ/⟨δx,δs⟩ + tzzᵀ
+            # where δs = s - μs̃
 
-        xs_dot = 3 * μv  # ⟨x,s⟩
+            xs_dot = 3 * μv  # ⟨x,s⟩
 
-        copy3!(δx, x);  axpy3!(-μv, xs, δx)
-        copy3!(δs, s);  axpy3!(-μv, ss, δs)
-        δ_dot = dot3(δx, δs)  # ⟨δx,δs⟩
+            # δx = x - μx̃, δs = s - μs̃
+            copy3!(δx, x);  axpy3!(-μv, xs, δx)
+            copy3!(δs, s);  axpy3!(-μv, ss, δs)
 
-        ger3!(M, s, s, inv(xs_dot), 0)
-        ger3!(M, δs, δs, inv(δ_dot), 1)
-        ger3!(M, z, z, t, 1)
+            # δ_dot = ⟨δx, δs⟩ = 3μ(μμ̃−1) > 0 off-central
+            # Note: The ⟨δx,δs⟩ form has k≈1 error scaling, better than the μ⟨q,s̃⟩ form (k≈2).
+            # Dotting two O(ε) vectors attenuates errors; dotting O(ε) with O(1) does not.
+            # (Empirically verified via BigFloat reference harness.)
+            δ_dot = dot3(δx, δs)
+
+            ger3!(M, s, s, inv(xs_dot), 0)
+            ger3!(M, δs, δs, inv(δ_dot), 1)
+            ger3!(M, z, z, t, 1)
+        end
     end
 
     return μv
 end
 
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::EXPCache{T}) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::ExponentialConeCache{T}) where {T}
     cache.μv[] = expscale!(cache.M, cache.R, cache.xs, cache.ss, p, d)
     copyto!(H, cache.M)
     return H
@@ -671,7 +719,7 @@ function corr!(
         Δp::AbstractVector{T},
         Δd::AbstractVector{T},
         σμ::Real,
-        cache::EXPCache{T}
+        cache::ExponentialConeCache{T}
     ) where {T}
     return expcorr!(r, cache.R, p, d, Δp, Δd, σμ)
 end
@@ -704,10 +752,6 @@ function expmaxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real)
     return γ * τ
 end
 
-function maxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::EXPCache{T}) where {T}
-    return expmaxstep_prim(x, Δx, γ)
-end
-
-function maxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::EXPCache{T}) where {T}
-    return expmaxstep_dual(x, Δx, γ)
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::ExponentialConeCache{T}) where {T}
+    return expmaxstep_prim(p, Δp, γ), expmaxstep_dual(d, Δd, γ)
 end

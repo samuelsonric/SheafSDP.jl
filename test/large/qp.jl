@@ -130,8 +130,8 @@ function run_benchmark(; raug=1e9, ε_R=0.01, scale=1)
             end
         end
 
-        # Cones: all :NOC
-        cones = [:NOC for _ in 1:N]
+        # Cones: all CofreeCone
+        cones = [CofreeCone() for _ in 1:N]
 
         prob = IPMProblem(c_vec, g, B, Q, cones)
         settings = IPMSettings{Float64}(

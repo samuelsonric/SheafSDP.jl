@@ -176,11 +176,11 @@ function build_soc_problem(N, n_v, d_e, edges; use_quadratic=false, quad_weight=
     end
 
     # Cones
-    cones = Vector{Symbol}(undef, 3*N)
+    cones = Vector{Cone}(undef, 3*N)
     for i in 1:N
-        cones[col_ζ(i)] = :SOC
-        cones[col_sp(i)] = :POS
-        cones[col_sm(i)] = :POS
+        cones[col_ζ(i)] = SheafSDP.SecondOrderCone()
+        cones[col_sp(i)] = SheafSDP.PositiveCone()
+        cones[col_sm(i)] = SheafSDP.PositiveCone()
     end
 
     return IPMProblem(c_vec, g, B_mat, Q, cones), F, b, x0
@@ -203,7 +203,7 @@ function solve_soc_with_mosek(N, n_v, d_e, edges, F, b; use_quadratic=false, qua
 
     # SOC constraints: ‖x_i‖₂ ≤ s_i
     for i in 1:N
-        @constraint(model, [s[i]; x[i]] in SecondOrderCone())
+        @constraint(model, [s[i]; x[i]] in JuMP.SecondOrderCone())
     end
 
     # Box constraints
@@ -391,8 +391,8 @@ function build_qp_problem(N, n_v, d_e, edges; quad_weight=1.0, seed=42)
         end
     end
 
-    # Cones: all NOC (no cone constraint)
-    cones = [:NOC for _ in 1:N]
+    # Cones: all CofreeCone (no cone constraint)
+    cones = [SheafSDP.CofreeCone() for _ in 1:N]
 
     return IPMProblem(c_vec, g, B_mat, Q, cones), F, b, x0
 end

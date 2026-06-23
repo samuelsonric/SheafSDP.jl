@@ -135,15 +135,15 @@ function run_benchmark(N, T; raug=1e7, ū=100.0)
         fill!(Q, 0)
 
         nv = N * blocks_per_agent
-        cones = Vector{Symbol}(undef, nv)
+        cones = Vector{Cone}(undef, nv)
         for i in 1:N
             for t in 1:T
-                cones[col_x(i, t)] = :NOC
+                cones[col_x(i, t)] = CofreeCone()
             end
             for t in 1:T-1
-                cones[col_up(i, t)] = :POS
-                cones[col_um(i, t)] = :POS
-                cones[col_w(i, t)] = :POS
+                cones[col_up(i, t)] = PositiveCone()
+                cones[col_um(i, t)] = PositiveCone()
+                cones[col_w(i, t)] = PositiveCone()
             end
         end
 

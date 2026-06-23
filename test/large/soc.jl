@@ -64,7 +64,7 @@ function run_benchmark(; raug=1e7, scale=1, x_max=100.0)
 
         # SOC constraints: ‖x_i‖₂ ≤ s_i
         for i in 1:N
-            @constraint(model, [s[i]; x[i]] in SecondOrderCone())
+            @constraint(model, [s[i]; x[i]] in JuMP.SecondOrderCone())
         end
 
         # Box constraints
@@ -141,11 +141,11 @@ function run_benchmark(; raug=1e7, scale=1, x_max=100.0)
         fill!(Q, 0)
 
         # Cones
-        cones = Vector{Symbol}(undef, 3*N)
+        cones = Vector{Cone}(undef, 3*N)
         for i in 1:N
-            cones[col_ζ(i)] = :SOC
-            cones[col_sp(i)] = :POS
-            cones[col_sm(i)] = :POS
+            cones[col_ζ(i)] = SheafSDP.SecondOrderCone()
+            cones[col_sp(i)] = SheafSDP.PositiveCone()
+            cones[col_sm(i)] = SheafSDP.PositiveCone()
         end
 
         prob = IPMProblem(c_vec, g, B, Q, cones)

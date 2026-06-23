@@ -1,35 +1,35 @@
 #
-# POS cone (nonnegative orthant ℝⁿ₊)
+# PositiveCone (nonnegative orthant ℝⁿ₊)
 #
 
-struct POS <: Cone end
+struct PositiveCone <: Cone end
 
-struct POSCache <: AbstractCache{POS}
-    cone::POS
+struct PositiveConeCache <: AbstractCache{PositiveCone}
+    cone::PositiveCone
 end
 
-function POSCache()
-    return POSCache(POS())
+function PositiveConeCache()
+    return PositiveConeCache(PositiveCone())
 end
 
-function degree(::POS, n::Int)
+function degree(::PositiveCone, n::Int)
     return n
 end
 
-function cachesize(::POS, n::Int)
+function cachesize(::PositiveCone, n::Int)
     return 0
 end
 
-function cache(::Caches, ::Int, c::POS)
-    return POSCache(c)
+function cache(::Caches, ::Int, c::PositiveCone)
+    return PositiveConeCache(c)
 end
 
-function identity!(x::AbstractVector{T}, ::POS) where {T}
+function identity!(x::AbstractVector{T}, ::PositiveCone) where {T}
     fill!(x, one(T))
     return x
 end
 
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, ::POSCache) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, ::PositiveConeCache) where {T}
     fill!(H, zero(T))
     for i in eachindex(p)
         H[i, i] = d[i] / p[i]
@@ -59,7 +59,7 @@ function corr!(
         Δp::AbstractVector{T},
         Δd::AbstractVector{T},
         σμ::Real,
-        ::POSCache
+        ::PositiveConeCache
     ) where {T}
     return poscorr!(r, p, d, Δp, Δd, σμ)
 end
@@ -78,10 +78,6 @@ function posmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
     return τ
 end
 
-function maxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::POSCache) where {T}
-    return posmaxstep(x, Δx, γ)
-end
-
-function maxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::POSCache) where {T}
-    return posmaxstep(x, Δx, γ)
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::PositiveConeCache) where {T}
+    return posmaxstep(p, Δp, γ), posmaxstep(d, Δd, γ)
 end

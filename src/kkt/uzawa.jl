@@ -1,6 +1,6 @@
 @kwdef struct UzawaSettings{T} <: KKTSettings{T}
     aaug::T = zero(T)
-    raug::T = one(T)
+    raug::T = T(1e6)
     atol::T = √eps(T)
     rtol::T = √eps(T)
     itmax::Int = 1000
@@ -128,7 +128,7 @@ function solve_uzw!(
     #
     # solve for x:
     #
-    #   F F' x = f + α Bᵀ g
+    #   F Fᵀ x = f + α Bᵀ g
     #
     copyto!(x, f)
     mul!(x, B', g, α, 1)
@@ -160,7 +160,7 @@ function solve_uzw!(
     #
     # S is the augmented Schur complement:
     #
-    #   S = B (F F')⁻¹ Bᵀ
+    #   S = B (F Fᵀ)⁻¹ Bᵀ
     #
     S = LinearOperator(T, m, m, true, true, schur!)
     #
@@ -181,7 +181,7 @@ function solve_uzw!(
     #
     # solve for x:
     #
-    #   F F' x = f - Bᵀ r
+    #   F Fᵀ x = f - Bᵀ r
     #
     copyto!(x, f)
     mul!(x, B', r, -1, 1)

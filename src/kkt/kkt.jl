@@ -2,9 +2,7 @@ abstract type KKTWorkspace{T} end
 abstract type KKTSettings{T} end
 
 include("it.jl")
-include("prec/prec.jl")
 include("uzawa.jl")
-include("admm.jl")
 
 function refine_kkt!(
         Δp::AbstractVector{T},

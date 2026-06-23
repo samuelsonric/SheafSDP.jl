@@ -167,12 +167,12 @@ function build_l2gain_problem(N, n_i, m_i, p_i, d_e, edges)
     Q = SheafSDP.allocblockdiag(B)
     fill!(Q, zero(T))
 
-    cones = Vector{Symbol}(undef, 2N + 1)
+    cones = Vector{Cone}(undef, 2N + 1)
     for ii in 1:N
-        cones[col_P(ii)] = :SDP
-        cones[col_S(ii)] = :SDP
+        cones[col_P(ii)] = SemidefiniteCone()
+        cones[col_S(ii)] = SemidefiniteCone()
     end
-    cones[col_μ] = :POS
+    cones[col_μ] = PositiveCone()
 
     return IPMProblem(c_vec, g_vec, B, Q, cones), systems, interface_maps
 end

@@ -1,36 +1,36 @@
 #
-# SOC cone (second-order / Lorentz cone)
+# SecondOrderCone (second-order / Lorentz cone)
 #
-# x = (x₀, x̄) ∈ SOC iff x₀ ≥ ‖x̄‖
+# x = (x₀, x̄) ∈ SecondOrderCone iff x₀ ≥ ‖x̄‖
 #
 
-struct SOC <: Cone end
+struct SecondOrderCone <: Cone end
 
-struct SOCCache{T} <: AbstractCache{SOC}
-    cone::SOC
+struct SecondOrderConeCache{T} <: AbstractCache{SecondOrderCone}
+    cone::SecondOrderCone
     β::FScalarView{T}  # scaling factor (0-dim view)
     w::FVectorView{T}  # direction vector (satisfies w'Jw = 1)
 end
 
 # degree = 2 (always, regardless of dimension)
-function degree(::SOC, n::Int)
+function degree(::SecondOrderCone, n::Int)
     return 2
 end
 
 # cache size: β(1) + w(n)
-function cachesize(::SOC, n::Int)
+function cachesize(::SecondOrderCone, n::Int)
     return 1 + n
 end
 
 # construct view-based cache from Caches
-function cache(c::Caches{T}, i::Int, cone::SOC) where T
+function cache(c::Caches{T}, i::Int, cone::SecondOrderCone) where T
     data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
     β = view(data, 1)
     w = view(data, 2:length(data))
-    SOCCache(cone, β, w)
+    SecondOrderConeCache(cone, β, w)
 end
 
-function identity!(x::AbstractVector{T}, ::SOC) where {T}
+function identity!(x::AbstractVector{T}, ::SecondOrderCone) where {T}
     # Jordan identity in isometric (scaled) coordinates: ẽ = √2·e
     # This makes dot(e,e) = 2 = tr(e∘e), so Euclidean dot = trace inner product.
     fill!(x, zero(T))
@@ -158,7 +158,7 @@ function socscale!(
     return β
 end
 
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SOCCache{T}) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SecondOrderConeCache{T}) where {T}
     β = socscale!(cache.w, p, d)
     cache.β[] = β
 
@@ -227,7 +227,7 @@ function corr!(
         Δp::AbstractVector{T},
         Δd::AbstractVector{T},
         σμ::Real,
-        cache::SOCCache{T}
+        cache::SecondOrderConeCache{T}
     ) where {T}
     soccorr!(r, cache.w, cache.β[], p, Δp, Δd, σμ)
 end
@@ -308,10 +308,6 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real) wher
     return τ
 end
 
-function maxstep_prim(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::SOCCache{T}) where {T}
-    return socmaxstep(x, Δx, γ)
-end
-
-function maxstep_dual(x::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, ::SOCCache{T}) where {T}
-    return socmaxstep(x, Δx, γ)
+function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, ::SecondOrderConeCache{T}) where {T}
+    return socmaxstep(p, Δp, γ), socmaxstep(d, Δd, γ)
 end

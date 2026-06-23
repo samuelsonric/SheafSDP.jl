@@ -177,17 +177,17 @@ function run_benchmark(N, T; raug=1e6, ū=100.0, λ=1.0, ε_R=1.0)
 
         # Cones
         nv = N * blocks_per_agent
-        cones = Vector{Symbol}(undef, nv)
+        cones = Vector{Cone}(undef, nv)
         for i in 1:N
             for t in 1:T
-                cones[col_x(i, t)] = :NOC
+                cones[col_x(i, t)] = CofreeCone()
             end
             for t in 1:T-1
-                cones[col_u(i, t)] = :NOC   # reified control is free
-                cones[col_up(i, t)] = :POS
-                cones[col_um(i, t)] = :POS
-                cones[col_sp(i, t)] = :POS
-                cones[col_sm(i, t)] = :POS
+                cones[col_u(i, t)] = CofreeCone()   # reified control is free
+                cones[col_up(i, t)] = PositiveCone()
+                cones[col_um(i, t)] = PositiveCone()
+                cones[col_sp(i, t)] = PositiveCone()
+                cones[col_sm(i, t)] = PositiveCone()
             end
         end
 

@@ -1,11 +1,11 @@
 #
-# SDP cone (PSD cone 𝕊ᵈ₊)
+# SemidefiniteCone (PSD cone 𝕊ᵈ₊)
 #
 
-struct SDP <: Cone end
+struct SemidefiniteCone <: Cone end
 
-struct SDPCache{T} <: AbstractCache{SDP}
-    cone::SDP
+struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
+    cone::SemidefiniteCone
     LP::FMatrixView{T}    # lower triangular Cholesky factor of P (d×d)
     LD::FMatrixView{T}    # lower triangular Cholesky factor of D (d×d)
     U::FMatrixView{T}     # orthogonal matrix from SVD (d×d)
@@ -116,18 +116,18 @@ end
 #
 
 # degree = triroot(n) where n = d(d+1)/2
-function degree(::SDP, n::Int)
+function degree(::SemidefiniteCone, n::Int)
     return triroot(n)
 end
 
 # cache size: LP(d²) + LD(d²) + U(d²) + s(d) = 3d² + d
-function cachesize(::SDP, n::Int)
+function cachesize(::SemidefiniteCone, n::Int)
     d = triroot(n)
     return 3 * d^2 + d
 end
 
 # construct view-based cache from Caches
-function cache(c::Caches{T}, i::Int, cone::SDP) where T
+function cache(c::Caches{T}, i::Int, cone::SemidefiniteCone) where T
     n = c.xcol[i+1] - c.xcol[i]
     d = triroot(n)
     data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
@@ -139,10 +139,10 @@ function cache(c::Caches{T}, i::Int, cone::SDP) where T
     U  = reshape(view(data, 2d2+1:3d2), d, d)
     s  = view(data, 3d2+1:3d2+d)
 
-    SDPCache(cone, LP, LD, U, s)
+    SemidefiniteConeCache(cone, LP, LD, U, s)
 end
 
-function identity!(x::AbstractVector{T}, ::SDP) where {T}
+function identity!(x::AbstractVector{T}, ::SemidefiniteCone) where {T}
     d = triroot(length(x))
     k = 1
 
@@ -195,7 +195,7 @@ function sdpscale!(
     return
 end
 
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SDPCache{T}) where {T}
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SemidefiniteConeCache{T}) where {T}
     sdpscale!(cache.LP, cache.LD, cache.U, cache.s, p, d)
 
     # compute H_v = W⁻¹ ⊗ₛ W⁻¹
@@ -269,7 +269,7 @@ function corr!(
         Δp::AbstractVector{T},
         Δd::AbstractVector{T},
         σμ::Real,
-        cache::SDPCache{T}
+        cache::SemidefiniteConeCache{T}
     ) where {T}
     return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
 end
@@ -297,10 +297,8 @@ function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}, γ::Real) whe
     return γ / max(γ, -λ)
 end
 
-function maxstep_prim(::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, cache::SDPCache{T}) where {T}
-    return sdpmaxstep(LowerTriangular(cache.LP), Δx, γ)
-end
-
-function maxstep_dual(::AbstractVector{T}, Δx::AbstractVector{T}, γ::Real, cache::SDPCache{T}) where {T}
-    return sdpmaxstep(LowerTriangular(cache.LD), Δx, γ)
+function maxsteps(::AbstractVector{T}, Δp::AbstractVector{T}, ::AbstractVector{T}, Δd::AbstractVector{T}, γ::Real, cache::SemidefiniteConeCache{T}) where {T}
+    τp = sdpmaxstep(LowerTriangular(cache.LP), Δp, γ)
+    τd = sdpmaxstep(LowerTriangular(cache.LD), Δd, γ)
+    return τp, τd
 end

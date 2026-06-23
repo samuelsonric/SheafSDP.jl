@@ -287,11 +287,11 @@ function build_passivity_problem()
     Q = SheafSDP.allocblockdiag(B)
     fill!(Q, zero(T))
 
-    # Cones: [G_i is :SDP, S_i is :SDP] per node
-    cones = Vector{Symbol}(undef, n_col_blocks)
+    # Cones: [G_i is SemidefiniteCone, S_i is SemidefiniteCone] per node
+    cones = Vector{Cone}(undef, n_col_blocks)
     for i in 1:N
-        cones[col_G(i)] = :SDP
-        cones[col_S(i)] = :SDP
+        cones[col_G(i)] = SemidefiniteCone()
+        cones[col_S(i)] = SemidefiniteCone()
     end
 
     return IPMProblem(c_vec, g, B, Q, cones), systems, interface_maps
@@ -472,10 +472,10 @@ function build_passivity_problem_params(N, n_i, m_i, d_e, edges)
     Q = SheafSDP.allocblockdiag(B)
     fill!(Q, zero(T))
 
-    cones = Vector{Symbol}(undef, n_col_blocks)
+    cones = Vector{Cone}(undef, n_col_blocks)
     for i in 1:N
-        cones[col_G(i)] = :SDP
-        cones[col_S(i)] = :SDP
+        cones[col_G(i)] = SemidefiniteCone()
+        cones[col_S(i)] = SemidefiniteCone()
     end
 
     return IPMProblem(c_vec, g, B, Q, cones), systems, interface_maps

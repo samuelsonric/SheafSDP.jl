@@ -52,20 +52,20 @@ function allocblockdiag(A::BlockSparseMatrix{T, I}) where {T, I}
     nout = nvtx = narc = nvtxs(A)
     ncol = nrow = ncols(A)
 
-    nblk = zero(I)
+    nbnz = zero(I)
 
     for v in vtxs(A)
-        nblk += ncols(A, v)^2
+        nbnz += ncols(A, v)^2
     end
 
-    D = BlockSparseMatrix{T, I}(nout, nvtx, narc, ncol, nrow, nblk)
+    D = BlockSparseMatrix{T, I}(nout, nvtx, narc, ncol, nrow, nbnz)
     return allocblockdiag!(D, A)
 end
 
 function allocblockdiag!(D::BlockSparseMatrix{T, I}, A::BlockSparseMatrix{T, I}) where {T, I}
     nout = nvtx = narc = nvtxs(D)
     ncol = nrow = ncols(D)
-    nblk = nblks(D)
+    nbnz = nbnzs(D)
 
     blk = zero(I)
 
@@ -82,7 +82,7 @@ function allocblockdiag!(D::BlockSparseMatrix{T, I}, A::BlockSparseMatrix{T, I})
     D.xsrc[nvtx + one(I)] = nout + one(I)
     D.xcol[nvtx + one(I)] = ncol + one(I)
     D.xrow[nout + one(I)] = nrow + one(I)
-    D.xblk[narc + one(I)] = nblk + one(I)
+    D.xblk[narc + one(I)] = nbnz + one(I)
 
     return D
 end
@@ -119,10 +119,11 @@ function cholblockdiag!(D::BlockSparseMatrix{T}, uplo::Symbol, α::Number=zero(T
             Dv[i] += α
         end
 
-        cholesky!(Symmetric(Dv, uplo))
+        F = cholesky!(Symmetric(Dv, uplo); check=false)
+        issuccess(F) || return false
     end
 
-    return D
+    return true
 end
 
 function lmulblockdiag!(A::BlockSparseMatrix, D::BlockSparseMatrix, uplo::Val{UPLO}, inv::Val{INV}=Val(false)) where {UPLO, INV}
@@ -327,14 +328,14 @@ end
 
 function blocktri(A::BlockSparseMatrix{T, I}, uplo::Val{UPLO}) where {T, I, UPLO}
     narc = zero(I)
-    nblk = zero(I)
+    nbnz = zero(I)
 
     for v in vtxs(A)
         for e in srcrange(A, v)
             u = A.tgt[e]
             if intriangle(u, v, uplo)
                 narc += one(I)
-                nblk += nblks(A, e)
+                nbnz += nbnzs(A, e)
             end
         end
     end
@@ -344,7 +345,7 @@ function blocktri(A::BlockSparseMatrix{T, I}, uplo::Val{UPLO}) where {T, I, UPLO
     ncol = ncols(A)
     nrow = nrows(A)
 
-    L = BlockSparseMatrix{T, I}(nout, nvtx, narc, ncol, nrow, nblk)
+    L = BlockSparseMatrix{T, I}(nout, nvtx, narc, ncol, nrow, nbnz)
     return blocktri!(L, A, uplo)
 end
 
@@ -366,7 +367,7 @@ function blocktri!(L::BlockSparseMatrix{T, I}, A::BlockSparseMatrix{T, I}, uplo:
                 L.tgt[Le]  = u
                 L.xblk[Le] = Lb + one(I)
 
-                Lb += nblks(A, Ae)
+                Lb += nbnzs(A, Ae)
             end
         end
     end
@@ -374,7 +375,7 @@ function blocktri!(L::BlockSparseMatrix{T, I}, A::BlockSparseMatrix{T, I}, uplo:
     L.xsrc[nvtxs(L) + one(I)] = narcs(L) + one(I)
     L.xcol[nvtxs(L) + one(I)] = ncols(A) + one(I)
     L.xrow[nouts(L) + one(I)] = nrows(A) + one(I)
-    L.xblk[narcs(L) + one(I)] = nblks(L) + one(I)
+    L.xblk[narcs(L) + one(I)] = nbnzs(L) + one(I)
 
     for v in vtxs(A)
         e = L.xsrc[v]

@@ -47,13 +47,12 @@ Compute the H-applied corrector term directly.
 function corr! end
 
 """
-    maxstep_prim(x, Δx, γ, cache) -> Real
-    maxstep_dual(x, Δx, γ, cache) -> Real
+    maxsteps(p, Δp, d, Δd, γ, cache) -> (τp, τd)
 
-Compute the maximum step τ ∈ (0,1] such that x + τΔx stays in the cone interior.
+Compute the maximum primal and dual steps τ ∈ (0,1] such that
+p + τp·Δp and d + τd·Δd stay in the cone interior.
 """
-function maxstep_prim end
-function maxstep_dual end
+function maxsteps end
 
 """
     cachesize(cone::Cone, n::Int) -> Int
@@ -61,6 +60,17 @@ function maxstep_dual end
 Return the number of T values needed in the cache for this cone with embdim n.
 """
 function cachesize end
+
+"""
+    init_cache!(cache)
+
+Initialize a cone's cache to a valid starting state.
+Most cones need no initialization; EXP sets xs to the identity point.
+"""
+function init_cache! end
+
+# Default no-op for cones that don't need initialization
+init_cache!(c::AbstractCache) = c
 
 # View types for cache structs
 const FScalarView{T} = SubArray{T, 0, FVector{T}, Tuple{Int64}, true}

@@ -125,8 +125,8 @@ function run_benchmark(; raug=1e8, scale=1)
         Q = SheafSDP.allocblockdiag(B)
         fill!(Q, 0)
 
-        # Cones: all POS
-        cones = [:POS for _ in 1:2*N]
+        # Cones: all PositiveCone
+        cones = [PositiveCone() for _ in 1:2*N]
 
         prob = IPMProblem(c_vec, g, B, Q, cones)
         settings = IPMSettings{Float64}(

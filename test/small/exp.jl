@@ -1,13 +1,14 @@
 #
-# Recipe A: Log-barrier minimum-fuel (§3 of exp-recipes.md)
+# Small-stalk EXP benchmark: Log-barrier minimum-fuel (Recipe A, §3 of exp-recipes.md)
 #
 # Three-backend oracle: R = JuMP MOI.ExponentialCone (Mosek), S = SheafSDP
 #
-# Problem: N agents on complete graph K_N, T timesteps
+# Problem: N agents on path graph P_N, T timesteps
 # Dynamics: planar double integrator (nx=4, nu=2)
 # Objective: maximize Σ log(ū - |u|) = log-barrier pushing control away from saturation
 # Constraints: dynamics + terminal position consensus
 #
+# EXP cone scaling axes (§9): N (agents), T (timesteps) — no arm-length axis
 #
 using AppleAccelerate
 using SheafSDP
@@ -19,7 +20,7 @@ using JuMP
 using MosekTools
 using BlockSparseArrays: vtxs, colrange, rowrange, ncols, blocksparse, block
 
-function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
+function run_exp_benchmark(N, T; raug=1e6, ū=10.0)
     Random.seed!(42)
 
     nx = 4; nu = 2; h = 0.1
@@ -29,9 +30,12 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
     P_proj = [1.0 0.0 0.0 0.0; 0.0 1.0 0.0 0.0]
 
     x0 = [randn(nx) for _ in 1:N]
-    # Use spanning tree (path graph) instead of complete graph to avoid redundant constraints
+    # Path graph P_N for coordination
     edges = [(i, i+1) for i in 1:N-1]
     ne = length(edges)
+
+    # Count exp cones: nu * (T-1) per agent
+    n_exp = N * nu * (T - 1)
 
     #
     # Leg R: JuMP with explicit MOI.ExponentialCone (conic lift)
@@ -40,7 +44,7 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
     # Our convention: (x₁, x₂, x₃) means x₁ ≥ x₂·exp(x₃/x₂)
     # Mapping: a ↔ x₃, b ↔ x₂, c ↔ x₁
     #
-    function solve_R()
+    function solve_mosek()
         model = Model(Mosek.Optimizer)
         set_silent(model)
 
@@ -87,7 +91,7 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
     #
     # Leg S: SheafSDP with EXP cones (§3 construction)
     #
-    function solve_S()
+    function solve_sheaf()
         # Per agent: T state blocks (NOC), 2*(T-1) control blocks (POS for u⁺, u⁻),
         # nu*(T-1) exp leaves (EXP, one per actuator channel per timestep)
         num_exp_per_agent = nu * (T - 1)
@@ -174,16 +178,16 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
         fill!(Q, 0)
 
         nv = N * blocks_per_agent
-        cones = Vector{Symbol}(undef, nv)
+        cones = Vector{Cone}(undef, nv)
         for i in 1:N
             for t in 1:T
-                cones[col_x(i, t)] = :NOC
+                cones[col_x(i, t)] = CofreeCone()
             end
             for t in 1:T-1
-                cones[col_up(i, t)] = :POS
-                cones[col_um(i, t)] = :POS
+                cones[col_up(i, t)] = PositiveCone()
+                cones[col_um(i, t)] = PositiveCone()
                 for k in 1:nu
-                    cones[col_exp(i, t, k)] = :EXP
+                    cones[col_exp(i, t, k)] = ExponentialCone()
                 end
             end
         end
@@ -193,22 +197,30 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
         settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=raug), feas_tol=1e-5, gap_tol=1e-5, itmax=200)
         result = solve(prob, settings)
 
-        return dot(c, result.p), result.iterations, result.kkt_iters, result.status
+        # Return negated objective (to match Mosek's maximization)
+        return -dot(c, result.p), result.iterations, result.kkt_iters, result.status
     end
 
-    # Run R vs S comparison
-    obj_R = solve_R()
-    local obj_S, iters, kkt_iters, status
-    try
-        (obj_S, iters, kkt_iters, status) = solve_S()
-    catch e
-        if isa(e, PosDefException)
-            obj_S = NaN
-            iters = 0
-            kkt_iters = 0
-            status = SheafSDP.NUMERICAL_FAILURE
-        else
-            rethrow(e)
+    # Warmup
+    solve_mosek()
+    try solve_sheaf() catch end
+
+    # Timed runs
+    t_mosek = @elapsed obj_mosek = solve_mosek()
+
+    local obj_sheaf, iters, kkt_iters, status, t_sheaf
+    t_sheaf = @elapsed begin
+        try
+            (obj_sheaf, iters, kkt_iters, status) = solve_sheaf()
+        catch e
+            if isa(e, PosDefException)
+                obj_sheaf = NaN
+                iters = 0
+                kkt_iters = 0
+                status = SheafSDP.NUMERICAL_FAILURE
+            else
+                rethrow(e)
+            end
         end
     end
 
@@ -216,8 +228,11 @@ function run_exp_barrier_benchmark(N, T; raug=1e7, ū=10.0)
         N = N,
         T = T,
         ne = ne,
-        obj_R = obj_R,
-        obj_S = obj_S,
+        n_exp = n_exp,
+        t_mosek = t_mosek,
+        t_sheaf = t_sheaf,
+        obj_mosek = obj_mosek,
+        obj_sheaf = obj_sheaf,
         iters = iters,
         kkt_iters = kkt_iters,
         status = status,
@@ -226,21 +241,72 @@ end
 
 # Run tests
 println("=" ^ 70)
-println("RECIPE A: Log-Barrier Minimum-Fuel (§3)")
+println("Small-Stalk EXP Benchmark: SheafSDP vs Mosek")
 println("=" ^ 70)
 println()
-println("Problem: N agents on complete graph K_N, T timesteps")
+println("Recipe A: Log-Barrier Minimum-Fuel (§3 of exp-recipes.md)")
+println("Problem: N agents on path P_N, T timesteps")
 println("Dynamics: planar double integrator (nx=4, nu=2)")
-println("Objective: maximize Σ log(ū - |u|) (log-barrier pushing control from saturation)")
+println("Objective: maximize Σ log(ū - |u|)")
 println("Constraints: dynamics + terminal position consensus")
 println()
+println("EXP scaling axes: N (agents), T (timesteps) — no arm-length axis")
+println()
 
-# Run R vs S comparison
-println("Testing R leg (Mosek conic) vs S leg (SheafSDP):")
-println("-" ^ 50)
-for (N, T) in [(3, 5), (5, 5), (5, 10)]
-    result = run_exp_barrier_benchmark(N, T)
-    println("  N=$N, T=$T: obj_R=$(round(result.obj_R, digits=3)), obj_S=$(round(result.obj_S, digits=3)), status=$(result.status)")
+# Test configurations: vary N and T
+# Note: exp needs larger T to converge (per §9: quasi-Newton, not true NT)
+# Target: at least one config where Mosek hits ~50ms
+configs = [
+    (5, 15),   # small: 140 exp cones
+    (10, 15),  # medium: 280 exp cones
+    (15, 20),  # medium-large: 570 exp cones
+    (20, 20),  # larger: 760 exp cones (Mosek ~35ms)
+    (25, 25),  # target ~50ms: 1200 exp cones
+]
+
+results = []
+for (N, T) in configs
+    println("Running N=$(N), T=$(T)...")
+    r = run_exp_benchmark(N, T)
+    push!(results, r)
+end
+
+# Print table
+println("| N | T | #EXP | Mosek | SheafSDP | IPM | KKT | Status | vs Mosek |")
+println("|---|---|------|-------|----------|-----|-----|--------|----------|")
+for r in results
+    mosek_ms = round(r.t_mosek * 1000, digits=1)
+    sheaf_ms = round(r.t_sheaf * 1000, digits=1)
+    vs_mosek = r.status == SheafSDP.OPTIMAL || r.status == SheafSDP.NEAR_OPTIMAL ?
+               "$(round(r.t_mosek / r.t_sheaf, digits=2))x" : "-"
+    println("| $(r.N) | $(r.T) | $(r.n_exp) | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.iters) | $(r.kkt_iters) | $(r.status) | $(vs_mosek) |")
+end
+println()
+
+# Correctness check
+println("Correctness check (objective agreement):")
+for r in results
+    if r.status == SheafSDP.OPTIMAL || r.status == SheafSDP.NEAR_OPTIMAL
+        obj_diff = abs(r.obj_mosek - r.obj_sheaf)
+        rel_diff = obj_diff / (abs(r.obj_mosek) + 1e-10)
+        println("  N=$(r.N), T=$(r.T): |Mosek - Sheaf| = $(round(obj_diff, sigdigits=3)) (rel: $(round(rel_diff, sigdigits=3)))")
+    else
+        println("  N=$(r.N), T=$(r.T): $(r.status) — skipped")
+    end
+end
+println()
+
+# Raug sweep: find optimal raug (powers of 10)
+println("-" ^ 70)
+println("Raug sweep (N=15, T=20):")
+println("-" ^ 70)
+println("| raug | Time | IPM | KKT | Status |")
+println("|------|------|-----|-----|--------|")
+for log_raug in 4:9
+    raug = 10.0^log_raug
+    r = run_exp_benchmark(15, 20; raug=raug)
+    sheaf_ms = round(r.t_sheaf * 1000, digits=1)
+    println("| 1e$(log_raug) | $(sheaf_ms) ms | $(r.iters) | $(r.kkt_iters) | $(r.status) |")
 end
 println()
 println("=" ^ 70)
