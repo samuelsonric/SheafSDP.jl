@@ -274,6 +274,20 @@ function corr!(
     return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
 end
 
+# Find the largest number 0 < τ ≤ 1 such that
+#
+#   L Lᵀ + τ ΔX = L (I + τ M) Lᵀ
+#
+# is positive definite, where
+#
+#   M = L⁻¹ ΔX L⁻ᵀ.
+#
+# This matrix is positive definite if and
+# only if M is, so the solution is equal to
+#
+#   τ = 1 / max {1, -λ},
+#
+# where λ is the smallest eigenvalue of L⁻¹ ΔX L⁻ᵀ.
 function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}) where {T}
     n = size(L, 1)
     M = zeros(T, n, n)
@@ -294,7 +308,7 @@ function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}) where {T}
     #
     λ = eigmin!(M, W, work, iwork)
 
-    return one(T) / max(one(T), -λ)
+    return inv(max(one(T), -λ))
 end
 
 function maxsteps(::AbstractVector{T}, Δp::AbstractVector{T}, ::AbstractVector{T}, Δd::AbstractVector{T}, cache::SemidefiniteConeCache{T}) where {T}
