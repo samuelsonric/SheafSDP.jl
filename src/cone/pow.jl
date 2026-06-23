@@ -137,7 +137,85 @@ function powhess!(H::AbstractMatrix{T}, x::AbstractVector{T}, α::T) where {T}
     return H
 end
 
-# Hessian + in-place Cholesky
+#
+# Structured Cholesky factorization with (3,1,2) pivot order
+#
+# The naive (1,2,3) Cholesky loses all digits when φ → 0 because the
+# Schur complement accumulates O(φ⁻²) terms that cancel. Pivoting
+# coordinate 3 first and using the symbolic collapse
+#
+#   c = p x₃² / (φ (p + x₃²))
+#
+# which is O(φ⁻¹), preserves ~6 more digits near the boundary.
+#
+# L is stored in (3,1,2) permuted order:
+#   row/col 1 of L corresponds to original coord 3
+#   row/col 2 of L corresponds to original coord 1
+#   row/col 3 of L corresponds to original coord 2
+#
+
+function powchol3!(L::AbstractMatrix{T}, H::AbstractMatrix{T}, x::AbstractVector{T}, α::T) where {T}
+    x1, x2, x3 = x[1], x[2], x[3]
+    a = 2 * α
+    b = 2 * (one(T) - α)
+    p = x1^a * x2^b
+    φ = p - x3^2
+
+    # Diagonal scalars from powhess! (recomputed for numerical stability)
+    ρ = p / φ
+    d1 = (2 * ρ * a + b) / (2 * x1^2)
+    d2 = (2 * ρ * b + a) / (2 * x2^2)
+
+    # Schur collapse coefficient: O(φ⁻¹) instead of O(φ⁻²)
+    c = p * x3^2 / (φ * (p + x3^2))
+
+    # Log-gradient components
+    ℓ1 = a / x1
+    ℓ2 = b / x2
+
+    # Radicands for the three pivots
+    D33 = H[3,3]                                    # 2(p + x₃²)/φ²
+    r1  = d1 - c * ℓ1^2
+    r2  = (d1 * d2 - c * (d1 * ℓ2^2 + d2 * ℓ1^2)) / r1
+
+    # Build L in (3,1,2) permuted storage
+    L[1,1] = sqrt(D33)
+    L[2,1] = H[1,3] / L[1,1]
+    L[3,1] = H[2,3] / L[1,1]
+    L[2,2] = sqrt(r1)
+    L[3,2] = -c * ℓ1 * ℓ2 / L[2,2]
+    L[3,3] = sqrt(r2)
+
+    # Zero upper triangle (not strictly necessary but clean)
+    L[1,2] = zero(T)
+    L[1,3] = zero(T)
+    L[2,3] = zero(T)
+
+    return L
+end
+
+# Solve H⁻¹ b via structured Cholesky L Lᵀ = P H Pᵀ (permutation 3,1,2)
+function powldiv3!(L::AbstractMatrix{T}, b::AbstractVector{T}) where {T}
+    # Forward substitution: solve L y = Pb
+    # Permute b from (1,2,3) to (3,1,2): [b₃, b₁, b₂]
+    b1, b2, b3 = b[1], b[2], b[3]
+    y1 = b3 / L[1,1]
+    y2 = (b1 - L[2,1] * y1) / L[2,2]
+    y3 = (b2 - L[3,1] * y1 - L[3,2] * y2) / L[3,3]
+
+    # Backward substitution: solve Lᵀ z = y
+    z3 = y3 / L[3,3]
+    z2 = (y2 - L[3,2] * z3) / L[2,2]
+    z1 = (y1 - L[2,1] * z2 - L[3,1] * z3) / L[1,1]
+
+    # Unpermute from (3,1,2) back to (1,2,3): z1→slot3, z2→slot1, z3→slot2
+    b[1] = z2
+    b[2] = z3
+    b[3] = z1
+    return b
+end
+
+# Hessian + in-place Cholesky (legacy, uses naive order)
 function powbarr!(L::AbstractMatrix{T}, x::AbstractVector{T}, α::T) where {T}
     powhess!(L, x, α)
     chol3!(L)
@@ -456,8 +534,8 @@ function powscale!(
         end
     end
 
-    # Cholesky H for corrector solve
-    chol3!(H)
+    # Structured Cholesky H for corrector solve (pivot order 3,1,2)
+    powchol3!(H, H, x, α)
 
     return μv
 end
@@ -493,11 +571,9 @@ function powcorr!(
     # F'(p)
     powbarrgrad!(Fp, p, α)
 
-    # v = F''(p)⁻¹Δd via Cholesky factor L (stored in R)
+    # v = F''(p)⁻¹Δd via structured Cholesky factor (stored in R, permuted 3,1,2)
     copy3!(v, Δd)
-    L = LowerTriangular(R)
-    ldiv3!(L, v)
-    ldiv3!(L', v)
+    powldiv3!(R, v)
 
     # η = -½ F'''(p)[Δp, v]
     powbarrhess!(D, p, Δp, α)

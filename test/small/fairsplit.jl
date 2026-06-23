@@ -89,22 +89,24 @@ function run_fairsplit_benchmark(N; m=3, raug=1e6)
     #
     # Per agent:
     #   - a_i block (POS, dim m): allocation
+    #   - slack_i block (POS, dim 1): budget slack
     #   - POW block 1 (dim 3): (a₂, a₃, w) ∈ P_{1/2}
     #   - POW block 2 (dim 3): (a₁, w, g) ∈ P_{1/3}
     #   - w block (NOC, dim 1): intermediate
     #   - g block (NOC, dim 1): epigraph
     #
     function solve_sheaf()
-        blocks_per_agent = 5  # a, pow1, pow2, w, g
+        blocks_per_agent = 6  # a, slack, pow1, pow2, w, g
 
         col_a(i) = (i - 1) * blocks_per_agent + 1
-        col_pow1(i) = (i - 1) * blocks_per_agent + 2
-        col_pow2(i) = (i - 1) * blocks_per_agent + 3
-        col_w(i) = (i - 1) * blocks_per_agent + 4
-        col_g(i) = (i - 1) * blocks_per_agent + 5
+        col_slack(i) = (i - 1) * blocks_per_agent + 2
+        col_pow1(i) = (i - 1) * blocks_per_agent + 3
+        col_pow2(i) = (i - 1) * blocks_per_agent + 4
+        col_w(i) = (i - 1) * blocks_per_agent + 5
+        col_g(i) = (i - 1) * blocks_per_agent + 6
 
         # Rows per agent:
-        #   - 1 budget row: Σ a_k ≤ b (with slack)
+        #   - 1 budget row: Σ a_k + slack = b_i
         #   - 3 pow1 slot rows: x₁=a₂, x₂=a₃, x₃=w
         #   - 3 pow2 slot rows: x₁=a₁, x₂=w, x₃=g
         # Plus coordination rows
@@ -122,21 +124,13 @@ function run_fairsplit_benchmark(N; m=3, raug=1e6)
         row_ids, col_ids, blocks = Int[], Int[], Matrix{Float64}[]
 
         for i in 1:N
-            # Budget row: Σ a_k = b_i (use equality with slack absorbed into POS)
-            # Actually, let's just use inequality: a_i lives in POS, so budget is just a constraint
-            # Σ_k a_k ≤ b_i can be written as Σ_k a_k + s = b_i with s ≥ 0
-            # But a_i is already POS, so we need a slack. Let's add budget slack to a block.
-            # Simpler: make budget an inequality by adding slack to a_i block
-            # For now, use simpler formulation: a_i is in POS (dim m), and we add budget row
-
-            # Budget: [1 1 1 ... 1] * a = b (inequality becomes equality with implicit slack)
-            # Actually, we need a slack variable. Let's add it.
-            # Hmm, this is getting complicated. Let's just enforce the consensus and use
-            # an upper bound implicitly through the cone.
-
-            # Simpler approach: just have the allocation with a soft budget
-            # through the consensus. Since all agents must agree and budgets differ,
-            # the tightest budget wins.
+            # Budget constraint: sum(a) + slack = b_i
+            push!(row_ids, row_budget(i))
+            push!(col_ids, col_a(i))
+            push!(blocks, ones(1, m))  # [1 1 1]
+            push!(row_ids, row_budget(i))
+            push!(col_ids, col_slack(i))
+            push!(blocks, reshape([1.0], 1, 1))
 
             # POW1: (a₂, a₃, w) ∈ P_{1/2}
             # x₁ = a₂ (row picks a[2] from a block)
@@ -234,8 +228,11 @@ function run_fairsplit_benchmark(N; m=3, raug=1e6)
             c[c_rng[1]] = -1.0
         end
 
-        # RHS: all zeros (coupling rows)
+        # RHS: budget constraints (agent i has budget b_i), coupling rows are 0
         g = zeros(size(B, 1))
+        for i in 1:N
+            g[rowrange(B, row_budget(i))] .= budgets[i]
+        end
 
         Q = SheafSDP.allocblockdiag(B)
         fill!(Q, 0)
@@ -244,6 +241,7 @@ function run_fairsplit_benchmark(N; m=3, raug=1e6)
         cones = Vector{SheafSDP.Cone}(undef, nv)
         for i in 1:N
             cones[col_a(i)] = SheafSDP.PositiveCone()
+            cones[col_slack(i)] = SheafSDP.PositiveCone()
             cones[col_pow1(i)] = SheafSDP.PowerCone(0.5)   # P_{1/2}
             cones[col_pow2(i)] = SheafSDP.PowerCone(1/3)   # P_{1/3}
             cones[col_w(i)] = SheafSDP.CofreeCone()
@@ -342,12 +340,12 @@ println("|---|------|-------|----------|-----|-----|--------|----------|")
 
 results = []
 for N in [3, 5, 10, 15, 20]
-    r = run_fairsplit_benchmark(N)
-    push!(results, r)
-    mosek_ms = round(r.t_mosek * 1000, digits=1)
-    sheaf_ms = round(r.t_sheaf * 1000, digits=1)
-    obj_diff = abs(r.obj_mosek - r.obj_sheaf)
-    println("| $(r.N) | $(r.n_pow) | $(mosek_ms) ms | $(sheaf_ms) ms | $(r.iters) | $(r.kkt_iters) | $(r.status) | $(round(obj_diff, sigdigits=3)) |")
+    res = run_fairsplit_benchmark(N)
+    push!(results, res)
+    mosek_ms = round(res.t_mosek * 1000, digits=1)
+    sheaf_ms = round(res.t_sheaf * 1000, digits=1)
+    diff = abs(res.obj_mosek - res.obj_sheaf)
+    println("| $(res.N) | $(res.n_pow) | $(mosek_ms) ms | $(sheaf_ms) ms | $(res.iters) | $(res.kkt_iters) | $(res.status) | $(round(diff, sigdigits=3)) |")
 end
 println()
 

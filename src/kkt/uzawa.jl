@@ -1,9 +1,11 @@
 @kwdef struct UzawaSettings{T} <: KKTSettings{T}
     aaug::T = zero(T)
-    raug::T = T(1e6)
+    raug::T = 1e6
     atol::T = √eps(T)
     rtol::T = √eps(T)
     itmax::Int = 1000
+    rgmin::T = 1e-9
+    rgmax::T = 1e-6
 end
 
 struct UzawaWorkspace{
@@ -13,7 +15,7 @@ struct UzawaWorkspace{
         ItrWrk <: IterationWorkspace{T}
     } <: KKTWorkspace{T}
     F::FChordalTriangular{:N, UPLO, T, I}
-    L::FChordalTriangular{:N, UPLO, T, I}
+    L::BlockSparseMatrix{T, I}
     facwrk::FactorizationWorkspace{T, I}
     divwrk::DivisionWorkspace{T, I}
     itrwrk::ItrWrk
@@ -22,7 +24,7 @@ struct UzawaWorkspace{
     nrm::T
 end
 
-function UzawaWorkspace(F::FChordalTriangular{:N, UPLO, T, I}, L::FChordalTriangular{:N, UPLO, T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
+function UzawaWorkspace(F::FChordalTriangular{:N, UPLO, T, I}, L::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}) where {UPLO, T, I <: Integer}
     m = size(B, 1)
     facwrk = FactorizationWorkspace(F)
     divwrk = DivisionWorkspace(F, 1)
@@ -49,9 +51,7 @@ function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
     B = selectvtxs(B, R.perm)
 
     F = FChordalTriangular{:N, :L, T, I}(S)
-    L = FChordalTriangular{:N, :L, T, I}(S)
-
-    copyto!(L, B' * B)
+    L = B' * B
 
     wrk = UzawaWorkspace(F, L, B)
 
@@ -60,26 +60,39 @@ end
 
 function init_kkt!(wrk::UzawaWorkspace{UPLO, T}, set::UzawaSettings{T}, A::BlockSparseMatrix) where {UPLO, T}
     wrk.α[] = α = set.aaug + set.raug * norm(Symmetric(A, :L)) / wrk.nrm
-    return init_uzw!(wrk.facwrk, wrk.F, wrk.L, A, α)
+    return init_uzw!(wrk.facwrk, wrk.F, wrk.L, A, α, set.rgmin, set.rgmax)
 end
 
 # form the augmented block
 #
-#   F = A + α Bᵀ B
+#   F = A + α Bᵀ B + ρ I
 #
-# and factorize it
+# and factorize it. Try ρ = 0, rgmin, 2*rgmin, ... until rgmax
 function init_uzw!(
         facwrk::FactorizationWorkspace{T},
         F::ChordalTriangular{:N, UPLO, T},
-        L::ChordalTriangular{:N, UPLO, T},
+        L::BlockSparseMatrix{T},
         A::BlockSparseMatrix{T},
-        α::T
+        α::T,
+        rgmin::T,
+        rgmax::T
     ) where {UPLO, T}
     @assert size(F, 1) == size(L, 1) == size(A, 1)
 
-    copyblockdiag!(F, A)
-    axpby!(α, L, 1, F)
+    ρ = rgmin
+
+    copyto!(F, A)
+    axpy!(α, L, F)
     info = cholesky!(facwrk, F; check=false)
+
+    while !iszero(info) && ρ ≤ rgmax
+        copyto!(F, A)
+        axpy!(α, L, F)
+        axpy!(ρ, I, F)
+        info = cholesky!(facwrk, F; check=false)
+        ρ *= 2
+    end
+
     return iszero(info)
 end
 
