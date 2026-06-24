@@ -8,12 +8,7 @@
     rgmax::T = 1e-6
 end
 
-struct UzawaWorkspace{
-        UPLO,
-        T,
-        I <: Integer,
-        ItrWrk <: IterationWorkspace{T}
-    } <: KKTWorkspace{T}
+struct UzawaWorkspace{UPLO, T, I <: Integer, ItrWrk <: IterationWorkspace{T}} <: KKTWorkspace{T}
     F::FChordalTriangular{:N, UPLO, T, I}
     L::BlockSparseMatrix{T, I}
     facwrk::FactorizationWorkspace{T, I}
@@ -35,14 +30,6 @@ function UzawaWorkspace(F::FChordalTriangular{:N, UPLO, T, I}, L::BlockSparseMat
     return UzawaWorkspace(F, L, facwrk, divwrk, itrwrk, r, α, nrm)
 end
 
-#
-# Initialize workspace for Uzawa method
-#
-# Returns (perm, B, workspace) where:
-# - perm: block permutation (use to unpermute results)
-# - B: permuted coboundary matrix
-# - workspace: UzawaWorkspace ready for solve_kkt!
-#
 function make_kkt(::UzawaSettings{T}, B::BlockSparseMatrix{T, I}) where {T, I}
     weights, graph = weightedgraph(B)
 
@@ -65,9 +52,15 @@ end
 
 # form the augmented block
 #
-#   F = A + α Bᵀ B + ρ I
+#   F = A + α Bᵀ B
 #
-# and factorize it. Try ρ = 0, rgmin, 2*rgmin, ... until rgmax
+# and factorize it. If the
+# factorization fails, increasing
+# diagonal perturbations
+#
+#   rgmin ≤ ρ ≤ rgmin
+#
+# are applied until it succeeds.
 function init_uzw!(
         facwrk::FactorizationWorkspace{T},
         F::ChordalTriangular{:N, UPLO, T},
