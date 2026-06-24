@@ -216,7 +216,7 @@ end
 
 # Compute the term
 #
-#   σμ I - ½ (ΔP ΔD + ΔD ΔP)
+#   σμ I - ½ (ΔP ΔD + ΔD ΔP) # WRONG
 #
 # in the Mehrota corrector formula
 function sdpcorr!(
@@ -252,7 +252,7 @@ function sdpcorr!(
     #
     # compute
     #
-    #   W = σμ Uᵀ Lᵀ L U - ½ Uᵀ Lᵀ (ΔP ΔD + ΔD ΔP) L U
+    #   W = σμ Uᵀ Lᵀ L U - ½ Uᵀ Lᵀ (ΔP ΔD + ΔD ΔP) L U # WRONG
     #
     for j in 1:n
         sj = s[j]
