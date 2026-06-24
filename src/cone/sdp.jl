@@ -6,10 +6,34 @@ struct SemidefiniteCone <: Cone end
 
 struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
     cone::SemidefiniteCone
-    LP::FMatrixView{T}    # lower triangular Cholesky factor of P (d×d)
-    LD::FMatrixView{T}    # lower triangular Cholesky factor of D (d×d)
-    U::FMatrixView{T}     # orthogonal matrix from SVD (d×d)
-    s::FVectorView{T}     # singular values (d)
+    #
+    # the lower triangular Cholesky factor of
+    # the primal variable P:
+    #
+    #   P = LP LPᵀ
+    #
+    LP::FMatrixView{T}
+    #
+    # the lower triangular Cholesky factor of
+    # the dual variable D:
+    #
+    #   D = LD LDᵀ
+    #
+    LD::FMatrixView{T}
+    #
+    # the orthogonal factor U in the singular
+    # value decomposition
+    #
+    #   LPᵀ LD = U Σ Vᵀ   
+    #
+    U::FMatrixView{T}
+    #
+    # the diagonal factor Σ in the singular
+    # value decomposition
+    #
+    #   LPᵀ LD = U Σ Vᵀ   
+    #
+    s::FVectorView{T}
 end
 
 #
@@ -156,6 +180,7 @@ function identity!(x::AbstractVector{T}, ::SemidefiniteCone) where {T}
 end
 
 function sdpscale!(
+        H::AbstractMatrix{T},
         LP::AbstractMatrix{T},
         LD::AbstractMatrix{T},
         U::AbstractMatrix{T},
@@ -166,6 +191,7 @@ function sdpscale!(
     n = size(LP, 1)
 
     V = zeros(T, n, n)
+    W = zeros(T, n, n)
     work = zeros(T, 1)
     iwork = zeros(BlasInt, 8n)
 
@@ -191,27 +217,25 @@ function sdpscale!(
     tril!(LD)
     mul!(U, LowerTriangular(LP)', LD)
     svd!(s, U, V, work, iwork)
+    #
+    # compute W⁻¹ = L⁻ᵀ U Σ Uᵀ L⁻¹
+    #
+    # where W = R Rᵀ with R = L U Σ^{-1/2} is the NT scaling point.
+    #
+    mul!(V, U, Diagonal(s))
+    mul!(W, V, U')
+    ldiv!(LowerTriangular(LP)', W)
+    rdiv!(W, LowerTriangular(LP))
+    #
+    # compute H = W⁻¹ ⊗ₛ W⁻¹
+    #
+    skron!(H, W)
 
     return
 end
 
 function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SemidefiniteConeCache{T}) where {T}
-    sdpscale!(cache.LP, cache.LD, cache.U, cache.s, p, d)
-
-    # compute H_v = W⁻¹ ⊗ₛ W⁻¹
-    # W⁻¹ = L⁻ᵀ U Σ Uᵀ L⁻¹ where W = R Rᵀ with R = L U Σ^{-1/2}
-    L, U, s = cache.LP, cache.U, cache.s
-    n = size(L, 1)
-
-    W = zeros(T, n, n)
-    X = zeros(T, n, n)
-
-    mul!(W, U, Diagonal(s))
-    mul!(X, W, U')
-    ldiv!(LowerTriangular(L)', X)
-    rdiv!(X, LowerTriangular(L))
-
-    return skron!(H, X)
+    return sdpscale!(H, cache.LP, cache.LD, cache.U, cache.s, p, d)
 end
 
 # Compute the term
