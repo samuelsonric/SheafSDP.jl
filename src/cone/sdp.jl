@@ -1,7 +1,3 @@
-#
-# SemidefiniteCone (PSD cone 𝕊ᵈ₊)
-#
-
 struct SemidefiniteCone <: Cone end
 
 struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
@@ -36,20 +32,14 @@ struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
     s::FVectorView{T}
 end
 
-#
-# SDP math utilities
-#
-
-# triangular number inverse
 function triroot(n::Integer)
     return (isqrt(1 + 8n) - 1) ÷ 2
 end
 
 function roottwo(::Type{T}) where {T}
-    return sqrt(T(2))
+    return sqrt(two(T))
 end
 
-# symmetrize a matrix by copying lower to upper
 function symmetrize!(M::AbstractMatrix)
     for j in axes(M, 1)
         for i in 1:j - 1
@@ -60,7 +50,6 @@ function symmetrize!(M::AbstractMatrix)
     return M
 end
 
-# svec: vectorize symmetric matrix with √2 scaling on off-diagonals (lower triangle)
 function svec!(v::AbstractVector{T}, M::AbstractMatrix{T}) where {T}
     n = size(M, 1); k = 0
     α = roottwo(T)
@@ -76,7 +65,6 @@ function svec!(v::AbstractVector{T}, M::AbstractMatrix{T}) where {T}
     return v
 end
 
-# smat: inverse of svec (unvectorize into lower triangle of matrix)
 function smat!(M::AbstractMatrix{T}, v::AbstractVector{T}) where {T}
     n = size(M, 1); k = 0
     α = roottwo(T)
@@ -92,8 +80,10 @@ function smat!(M::AbstractMatrix{T}, v::AbstractVector{T}) where {T}
     return M
 end
 
-# symmetric Kronecker product: H = B ⊗ₛ B (fills full matrix; symmetric iff B is)
-# svec(B X B') = (B ⊗ₛ B) svec(X)
+# compute the symmetric Kronecker product
+#
+#   H = A ⊗ A
+#
 function skron!(H::AbstractMatrix{T}, A::AbstractMatrix{T}) where {T}
     n = size(A, 1)
     α = roottwo(T)
@@ -135,37 +125,33 @@ function skron!(H::AbstractMatrix{T}, A::AbstractMatrix{T}) where {T}
     return H
 end
 
-#
-# SDP cone interface
-#
-
-# degree = triroot(n) where n = d(d+1)/2
 function degree(::SemidefiniteCone, n::Int)
     return triroot(n)
 end
 
-# cache size: LP(d²) + LD(d²) + U(d²) + s(d) = 3d² + d
 function cachesize(::SemidefiniteCone, n::Int)
     d = triroot(n)
-    return 3 * d^2 + d
+    return 3d^2 + d
 end
 
-# construct view-based cache from Caches
-function cache(c::Caches{T}, i::Int, cone::SemidefiniteCone) where T
-    n = c.xcol[i+1] - c.xcol[i]
+function cache(c::Caches{T}, i::Integer, cone::SemidefiniteCone) where T
+    n = c.xcol[i + 1] - c.xcol[i]
     d = triroot(n)
-    data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
 
-    # Layout: LP(d²), LD(d²), U(d²), s(d)
-    d2 = d^2
-    LP = reshape(view(data, 1:d2), d, d)
-    LD = reshape(view(data, d2+1:2d2), d, d)
-    U  = reshape(view(data, 2d2+1:3d2), d, d)
-    s  = view(data, 3d2+1:3d2+d)
+    data = view(c.val, c.xblk[i]:c.xblk[i + 1] - 1)
+
+    LP = reshape(view(data, 0d^2 + 1:1d^2    ), d, d)
+    LD = reshape(view(data, 1d^2 + 1:2d^2    ), d, d)
+    U  = reshape(view(data, 2d^2 + 1:3d^2    ), d, d)
+    s  =         view(data, 3d^2 + 1:3d^2 + d)
 
     SemidefiniteConeCache(cone, LP, LD, U, s)
 end
 
+# construct the identity matrix
+#
+#   I
+#
 function identity!(x::AbstractVector{T}, ::SemidefiniteCone) where {T}
     d = triroot(length(x))
     k = 1
@@ -179,6 +165,15 @@ function identity!(x::AbstractVector{T}, ::SemidefiniteCone) where {T}
     return x
 end
 
+# compute the symmetric Kronecker product
+#
+#   H = W⁻¹ ⊗ W⁻¹
+#
+# where W is the Nesterov-Todd scaling point
+#
+#   W = √P √(√P D √P)⁻¹ √P
+#     = √D √(√D P √D)⁻¹ √D
+# 
 function sdpscale!(
         H::AbstractMatrix{T},
         LP::AbstractMatrix{T},
@@ -218,16 +213,19 @@ function sdpscale!(
     mul!(U, LowerTriangular(LP)', LD)
     svd!(s, U, V, work, iwork)
     #
-    # compute W⁻¹ = L⁻ᵀ U Σ Uᵀ L⁻¹
+    # compute the inverse W⁻¹ of the Nesterov-Todd
+    # scaling point
     #
-    # where W = R Rᵀ with R = L U Σ^{-1/2} is the NT scaling point.
+    #   W = LP U Σ⁻¹ Uᵀ LPᵀ
     #
     mul!(V, U, Diagonal(s))
     mul!(W, V, U')
     ldiv!(LowerTriangular(LP)', W)
     rdiv!(W, LowerTriangular(LP))
     #
-    # compute H = W⁻¹ ⊗ₛ W⁻¹
+    # compute the symmetric Kronecker product
+    #
+    #   H = W⁻¹ ⊗ W⁻¹
     #
     skron!(H, W)
 
@@ -238,11 +236,23 @@ function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}
     return sdpscale!(H, cache.LP, cache.LD, cache.U, cache.s, p, d)
 end
 
-# Compute the term
+# Compute the corrector term
 #
-#   σμ I - ½ (ΔP ΔD + ΔD ΔP) # WRONG
+#   σμ Σ⁻¹ - Σ - 𝓛⁻¹(X)
 #
-# in the Mehrota corrector formula
+# where
+#
+#   R = L U √Σ⁻¹
+#
+# is a factor of the Nesterov-Todd
+# scaling point W = R Rᵀ, X is the sum
+#
+#   X = R⁻¹ ΔP ΔD R + Rᵀ ΔD ΔP R⁻ᵀ,
+#
+# and 𝓛 is the Lyapunov operator
+#
+#   𝓛(Y) = ΣY + YΣ.
+#
 function sdpcorr!(
         r::AbstractVector{T},
         L::AbstractMatrix{T},
@@ -276,14 +286,13 @@ function sdpcorr!(
     #
     # compute
     #
-    #   W = σμ Uᵀ Lᵀ L U - ½ Uᵀ Lᵀ (ΔP ΔD + ΔD ΔP) L U # WRONG
+    #   W = # TODO
     #
     for j in 1:n
         sj = s[j]
 
         for i in 1:j - 1
-            si = s[i]
-            W[i, j] = W[j, i] = -weightedmean(si, sj, X[i, j], X[j, i])
+            W[i, j] = W[j, i] = -weightedmean(s[i], sj, X[i, j], X[j, i])
         end
 
         W[j, j] = σμ - sj^2 - X[j, j]
