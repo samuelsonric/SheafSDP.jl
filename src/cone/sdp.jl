@@ -214,7 +214,11 @@ function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}
     return skron!(H, X)
 end
 
-# H·R_c = L⁻ᵀ U [σμI - Σ² - Σ B_mat Σ] Uᵀ L⁻¹
+# Compute the term
+#
+#   σμ I - ½ (ΔP ΔD + ΔD ΔP)
+#
+# in the Mehrota corrector formula
 function sdpcorr!(
         r::AbstractVector{T},
         L::AbstractMatrix{T},
@@ -233,14 +237,23 @@ function sdpcorr!(
 
     smat!(ΔP, Δp)
     smat!(ΔD, Δd)
-
+    #
+    # compute the product
+    #
+    #   X = Uᵀ L⁻¹ ΔP ΔD L U
+    #
     mul!(W, Symmetric(ΔD, :L), LowerTriangular(L))
     mul!(X, Symmetric(ΔP, :L), W)
+
     ldiv!(LowerTriangular(L), X)
 
     mul!(W, U', X)
     mul!(X, W, U)
-
+    #
+    # compute
+    #
+    #   W = σμ Uᵀ Lᵀ L U - ½ Uᵀ Lᵀ (ΔP ΔD + ΔD ΔP) L U
+    #
     for j in 1:n
         sj = s[j]
 
@@ -251,7 +264,13 @@ function sdpcorr!(
 
         W[j, j] = σμ - sj^2 - X[j, j]
     end
-
+    #
+    # compute the product
+    #
+    #   W = L⁻ᵀ U W Uᵀ L⁻¹
+    #
+    # and write it to r.
+    #
     mul!(X, W, U')
     mul!(W, U, X)
 
