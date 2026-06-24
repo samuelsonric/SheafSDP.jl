@@ -24,47 +24,12 @@ end
     gap_tol::T = 1e-8
     itmax::Int = 100
     verbose::Bool = false
-    stall_window::Int = 5
-    stall_threshold::T = 0.99
+    near_factor::T = 1000.0
     step_collapse_threshold::T = 1e-6
     refine_itmax::Int = 10
     refine_atol::T = 1e-12
     refine_rtol::T = 1e-13
-end
-
-const IPMHistoryRow{T} = @NamedTuple{μ::T, τp::T, τd::T, rp::T, rd::T, kkt_iters::Int}
-
-struct IPMHistory{T} <: AbstractVector{IPMHistoryRow{T}}
-    μ::Vector{T}
-    τp::Vector{T}
-    τd::Vector{T}
-    rp::Vector{T}
-    rd::Vector{T}
-    kkt_iters::Vector{Int}
-end
-
-function IPMHistory{T}() where {T}
-    return IPMHistory{T}(T[], T[], T[], T[], T[], Int[])
-end
-
-Base.size(h::IPMHistory) = (length(h.μ),)
-
-function Base.getindex(h::IPMHistory, i::Int)
-    return (μ=h.μ[i], τp=h.τp[i], τd=h.τd[i], rp=h.rp[i], rd=h.rd[i], kkt_iters=h.kkt_iters[i])
-end
-
-function Base.push!(h::IPMHistory, row::NamedTuple)
-    push!(h.μ, row.μ)
-    push!(h.τp, row.τp)
-    push!(h.τd, row.τd)
-    push!(h.rp, row.rp)
-    push!(h.rd, row.rd)
-    push!(h.kkt_iters, row.kkt_iters)
-    return h
-end
-
-function printrow(i::Int, row::IPMHistoryRow)
-    println("Iter $i: μ = $(row.μ), ||rp|| = $(row.rp), ||rd|| = $(row.rd), kkt = $(row.kkt_iters)")
+    scale_itmax::Int = 10
 end
 
 struct IPMResult{T}
@@ -74,7 +39,7 @@ struct IPMResult{T}
     status::IPMStatus
     iterations::Int
     kkt_iters::Int
-    history::IPMHistory{T}
+    history::History{T}
 end
 
 mutable struct IPMSolver{T, I, W, Perm}
@@ -87,6 +52,9 @@ mutable struct IPMSolver{T, I, W, Perm}
     B::BlockSparseMatrix{T, I}
     Q::BlockSparseMatrix{T, I}
     cones::Vector{<:Cone}
+
+    # scaling
+    scaling::Scaling{T}
 
     # permutation
     P::Perm
@@ -111,7 +79,7 @@ mutable struct IPMSolver{T, I, W, Perm}
     dy::Vector{T}
 
     # state
-    hist::IPMHistory{T}
+    hist::History{T}
     iter::Int
     kkt_iters::Int
     status::IPMStatus
@@ -246,7 +214,7 @@ function startingpoint(B::BlockSparseMatrix{T}, g::AbstractVector{T},
     return p, d, y
 end
 
-function isstalled(hist::IPMHistory; window=5, threshold=0.99, noise_floor=1e-12)
+function isstalled(hist::History; window=5, threshold=0.99, noise_floor=1e-12)
     n = length(hist.μ)
     if n < window + 1
         return false
@@ -274,23 +242,19 @@ function isstalled(hist::IPMHistory; window=5, threshold=0.99, noise_floor=1e-12
     return !μ_improved && !rp_improved && !rd_improved
 end
 
-# Check if solution is "near optimal" - small enough residuals and gap even if stalled
-# Hypatia uses near_factor=1000 by default
-function isnearoptimal(hist::IPMHistory, feas_tol, gap_tol; near_factor=1000.0)
+# Check if solution is "near optimal" - residuals and gap within relaxed tolerances
+function isnearoptimal(hist::History, feas_tol, gap_tol, near_factor)
     if isempty(hist.μ)
         return false
     end
     μ = hist.μ[end]
     rp = hist.rp[end]
     rd = hist.rd[end]
-    # Accept if residuals are small and either:
-    # 1. μ is reasonably small (within near_factor of gap_tol), or
-    # 2. Residuals are at machine precision (1e-10), indicating numerical convergence
-    residuals_tiny = rp < 1e-10 && rd < 1e-10
-    return rp < feas_tol && rd < feas_tol && (μ < near_factor * gap_tol || residuals_tiny)
+    # Accept if residuals and gap are within near_factor of tolerances
+    return rp < near_factor * feas_tol && rd < near_factor * feas_tol && μ < near_factor * gap_tol
 end
 
-function isnumfail(hist::IPMHistory; window=3, threshold=1e-6)
+function isnumfail(hist::History; window=3, threshold=1e-6)
     if length(hist.τp) < window
         return false
     end
@@ -310,23 +274,37 @@ function isnumfail(hist::IPMHistory; window=3, threshold=1e-6)
 end
 
 function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
-    c0, g, B0, Q0 = prob.c, prob.g, prob.B, prob.Q
+    c0, g0, B0, Q0 = prob.c, prob.g, prob.B, prob.Q
     cones0 = prob.cones
-
-    kktset = settings.kkt
-    R, P, B, wrk = make_kkt(kktset, B0)
 
     n = size(B0, 2)
     m = size(B0, 1)
 
-    p0, d0, y = startingpoint(B0, g, prob.c, cones0)
+    # equilibrate in original space (before permutation)
+    scaling = Scaling{T}(n, m)
+    if settings.scale_itmax > 0
+        B_eq = copy(B0)
+        Q_eq = copy(Q0)
+        c_eq = copy(c0)
+        g_eq = copy(g0)
+        equilibrate!(scaling, B_eq, Q_eq, c_eq, g_eq; itmax=settings.scale_itmax)
+    else
+        B_eq = B0
+        Q_eq = Q0
+        c_eq = c0
+        g_eq = g0
+    end
 
-    p = P * p0
-    d = P * d0
-    c = P * c0
+    kktset = settings.kkt
+    R, P, B, wrk = make_kkt(kktset, B_eq)
 
-    Q = halfselectvtxs(halfselectvtxs(Q0, R.perm), R.perm)
+    c = P * c_eq
+    g = copy(g_eq)
+    Q = halfselectvtxs(halfselectvtxs(Q_eq, R.perm), R.perm)
     cones = cones0[R.perm]
+
+    # compute starting point on (possibly scaled) data
+    p, d, y = startingpoint(B, g, c, cones)
 
     ν = conedegree(cones, B)
 
@@ -350,10 +328,11 @@ function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSe
     sy = zeros(T, m)
     dp = zeros(T, n)
     dy = zeros(T, m)
-    hist = IPMHistory{T}()
+    hist = History{T}()
 
     return IPMSolver(
         p, d, y, c, g, B, Q, cones,
+        scaling,
         P,
         rp, rd, f, Δpa, Δya, Δda, Δp, Δy, Δd, H, caches, wrk, sp, sy, dp, dy,
         hist, 0, 0, ITERATION_LIMIT, ν,
@@ -478,9 +457,9 @@ function step!(s::IPMSolver{T}) where {T}
         printrow(s.iter, s.hist[end])
     end
 
-    if isstalled(s.hist; window=s.settings.stall_window, threshold=s.settings.stall_threshold)
+    if isstalled(s.hist)
         # Check if we're "near optimal" - residuals and μ are small enough
-        if isnearoptimal(s.hist, s.settings.feas_tol, s.settings.gap_tol)
+        if isnearoptimal(s.hist, s.settings.feas_tol, s.settings.gap_tol, s.settings.near_factor)
             s.status = NEAR_OPTIMAL
             if s.settings.verbose
                 println("μ stalling detected but solution is near-optimal; accepting")
@@ -496,10 +475,17 @@ function step!(s::IPMSolver{T}) where {T}
     end
 
     if isnumfail(s.hist; threshold=s.settings.step_collapse_threshold)
-        s.status = NUMERICAL_FAILURE
-
-        if s.settings.verbose
-            println("Warning: numerical failure detected")
+        # Check if we're "near optimal" before declaring failure
+        if isnearoptimal(s.hist, s.settings.feas_tol, s.settings.gap_tol, s.settings.near_factor)
+            s.status = NEAR_OPTIMAL
+            if s.settings.verbose
+                println("Step collapse detected but solution is near-optimal; accepting")
+            end
+        else
+            s.status = NUMERICAL_FAILURE
+            if s.settings.verbose
+                println("Warning: numerical failure detected")
+            end
         end
 
         return false
@@ -511,10 +497,13 @@ end
 function CommonSolve.solve!(s::IPMSolver{T}) where {T}
     while step!(s) end
 
+    # unpermute first, then unscale (scaling is in original space)
     p = s.P \ s.p
     d = s.P \ s.d
+    y = copy(s.y)
+    unscale!(p, d, y, s.scaling)
 
-    return IPMResult{T}(p, d, s.y, s.status, s.iter, s.kkt_iters, s.hist)
+    return IPMResult{T}(p, d, y, s.status, s.iter, s.kkt_iters, s.hist)
 end
 
 function CommonSolve.solve(prob::IPMProblem, settings::IPMSettings=IPMSettings{eltype(prob.c)}())

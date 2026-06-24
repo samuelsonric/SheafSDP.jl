@@ -1,3 +1,7 @@
+function two(::Type{T}) where {T}
+    return convert(T, 2)
+end
+
 # twosum: s + e = a + b exactly, where s = fl(a+b)
 function twosum(a::T, b::T) where {T}
     s  = a + b
