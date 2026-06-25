@@ -181,89 +181,57 @@ function expindual(z::AbstractVector)
     z[1] > 0 && z[3] < 0 && ℯ * z[1] >= -z[3] * exp(z[2] / z[3])
 end
 
-# Compute the "shadow" primal, solving
 #
-#   f'(p*) = -d
+# Compute the "shadow" primal x̃ solving F'(x̃) = -d,
+# reduced to a 1-D scalar root-find in x̃₂.
 #
-# using Newton's method.
-function expdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}; maxiter::Int=50, tol::T=T(1e-12)) where {T}
-    g      = zeros(T, 3)
-    R      = zeros(T, 3, 3)
-    Δ      = zeros(T, 3)
-    RtΔ    = zeros(T, 3)
-    xs_new = zeros(T, 3)
+# Reduction:
+#   ψ̃ = -1/d₃           (d₃ < 0 for dual interior)
+#   x̃₁ = x̃₂/(ψ̃ d₁) + 1/d₁
+#   h(x̃₂) = (log(x̃₁/x̃₂) - 1)/ψ̃ + 1/x̃₂ - d₂ = 0
+#   x̃₃ = x̃₂ log(x̃₁/x̃₂) - ψ̃
+#
+# h is monotone decreasing with transcendental-free derivative.
+#
+function expdualgrad!(xs::AbstractVector{T}, d::AbstractVector{T}) where {T}
+    d1, d2, d3 = d[1], d[2], d[3]
 
-    # warm start: if xs is not in the interior of the exponential
-    # cone, find a starting point
-    if !expincone(xs)
-        #
-        # choose
-        #
-        #   p* = ν e / ⟨e, d⟩
-        #
-        # ensuring that
-        #
-        #   ⟨p*, d⟩ = ν
-        #
-        expid!(xs)
-        lmul3!(max(T(3) / (dot3(xs, s) + one(T)), T(1e-8)), xs)
+    # pin ψ̃ from the third gradient equation
+    ψ = -inv(d3)
 
-        while !expincone(xs)
-            xs[1] *= 2
-            xs[2] *= 2
-            xs[3] -= one(T)
+    # x̃₁ as a function of x̃₂
+    x1of(x2) = x2 / (ψ * d1) + inv(d1)
+
+    # scalar root h(x̃₂) = 0
+    h(x2)  = (log(x1of(x2) / x2) - one(T)) / ψ + inv(x2) - d2
+    hp(x2) = inv(ψ * (x2 + ψ)) - inv(ψ * x2) - inv(x2^2)
+
+    # bracket the root: h is decreasing, so find lo (h>0) and hi (h<0)
+    seed = one(T)
+    lo, hi = if h(seed) > 0
+        lo_tmp = seed
+        hi_tmp = 2 * seed
+        while h(hi_tmp) > 0
+            hi_tmp *= 2
         end
+        (lo_tmp, hi_tmp)
+    else
+        hi_tmp = seed
+        lo_tmp = seed / 2
+        while h(lo_tmp) < 0
+            lo_tmp /= 2
+        end
+        (lo_tmp, hi_tmp)
     end
 
-    for iter in 1:maxiter
-        # compute the residual
-        #
-        #   f'(p*) + d
-        #
-        expbarrgrad!(g, xs)
-        axpy3!(1, s, g)
-        #
-        # compute a Newton step, solving
-        #
-        #   f''(p*) Δ = -f'(p*) - d
-        #
-        expbarr!(R, xs)
-        axpby!(-1, g, 0, Δ)
-        ldiv3!(R, Δ); ldiv3!(R', Δ)
-        #
-        # determine if the algorithm has
-        # converged by checking the decrement
-        #
-        #   ⟨f''(p) Δ, Δ⟩ = ‖Rᵀ Δ‖
-        #
-        mul3!(RtΔ, R', Δ)
+    # safeguarded Newton (h decreasing ⟹ increasing = false)
+    x2 = rtsafe(h, hp, lo, hi, seed, false)
 
-        if norm3(RtΔ) < tol
-            return xs
-        end
-        #
-        # take a damped step, using a line search
-        # to stay interior
-        #
-        θ = one(T)
-
-        while θ > 1e-14
-            copy3!(xs_new, xs)
-            axpy3!(θ, Δ, xs_new)
-
-            if expincone(xs_new)
-                copy3!(xs, xs_new)
-                break
-            end
-
-            θ /= 2
-        end
-
-        if θ ≤ 1e-14
-            @warn "Shadow primal Newton line search failed"
-            break
-        end
-    end
+    # recover the full shadow primal
+    x1 = x1of(x2)
+    xs[1] = x1
+    xs[2] = x2
+    xs[3] = x2 * log(x1 / x2) - ψ
 
     return xs
 end

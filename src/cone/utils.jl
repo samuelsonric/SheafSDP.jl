@@ -227,3 +227,43 @@ function binarysearchlast(f, lo::T, hi::T, tol::T, itmax::Int) where {T}
 
     return lo
 end
+
+#
+# Safeguarded Newton on a scalar root of f in [lo, hi],
+# where f(lo) and f(hi) have opposite signs. Takes the
+# Newton step r - f/f' when it lands inside the bracket,
+# otherwise a bisection step. Converges on the RELATIVE
+# bracket width.
+#
+# `increasing` records the sign convention: true if f
+# crosses from negative to positive (f' > 0 at the root),
+# false if from positive to negative.
+#
+function rtsafe(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
+                tol::T = T(1e-12), maxit::Int = 60) where {T}
+    r = clamp(r0, lo, hi)
+
+    for _ in 1:maxit
+        fr = f(r)
+
+        # tighten the bracket toward the root
+        if (fr > 0) == increasing
+            hi = r
+        else
+            lo = r
+        end
+
+        # converge on the relative bracket width
+        if hi - lo < tol * (one(T) + abs(r))
+            return (lo + hi) / 2
+        end
+
+        # Newton step, safeguarded into a bisection
+        # step if it would leave the bracket
+        rn = r - fr / fp(r)
+
+        r = (lo < rn < hi) ? rn : (lo + hi) / 2
+    end
+
+    return (lo + hi) / 2
+end

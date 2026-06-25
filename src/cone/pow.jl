@@ -369,7 +369,7 @@ end
 #   X₂(ρ) = (2(1-α)ρ + α)/s₂
 #   g(ρ) = ρ(ρ-1) - (s₃²/4) X₁(ρ)^(2α) X₂(ρ)^(2(1-α)) = 0
 #
-# Uses bracketed bisection (not Newton, which fails ~12% of points).
+# Uses safeguarded Newton with bracket fallback.
 # Shortcuts: s₃=0 ⟹ ρ*=1; α=1/2 ⟹ quadratic closed form.
 #
 
@@ -379,29 +379,32 @@ function powdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}, α::T) where 
     b = 2 * (one(T) - α)
 
     # Shortcut 1: s₃ = 0 ⟹ ρ* = 1 (symmetric slice)
-    if iszero(s3)
-        ρ = one(T)
+    ρ = if iszero(s3)
+        one(T)
     # Shortcut 2: α = 1/2 ⟹ quadratic closed form
-    elseif α == one(T)/2
+    elseif α == one(T) / 2
         k = s3^2 / (4 * s1 * s2)
-        ρ = ((one(T) + k) + sqrt(one(T) + 3*k)) / (2 * (one(T) - k))
+        ((one(T) + k) + sqrt(one(T) + 3k)) / (2 * (one(T) - k))
     else
-        # General case: bracketed bisection
-        function gval(ρ)
-            X1 = (a * ρ + one(T) - α) / s1
-            X2 = (b * ρ + α) / s2
-            return ρ * (ρ - one(T)) - (s3^2 / 4) * X1^a * X2^b
-        end
+        # General case: safeguarded Newton
+        k = s3^2 / 4
+
+        X1(ρ) = (a * ρ + one(T) - α) / s1
+        X2(ρ) = (b * ρ + α) / s2
+
+        g(ρ)  = ρ * (ρ - one(T)) - k * X1(ρ)^a * X2(ρ)^b
+        gp(ρ) = (2ρ - one(T)) - k * X1(ρ)^a * X2(ρ)^b *
+                (a^2 / (a * ρ + one(T) - α) + b^2 / (b * ρ + α))
 
         # Build bracket: lo=1 (g(1)≤0 always), grow hi until g(hi)>0
         lo = one(T)
         hi = 2 * one(T)
-        while gval(hi) ≤ 0
+        while g(hi) ≤ 0
             hi *= 2
         end
 
-        # Bisection: find largest ρ where g(ρ) ≤ 0
-        ρ = binarysearchlast(ρ -> gval(ρ) ≤ 0, lo, hi, eps(T), 64)
+        # Safeguarded Newton (g increasing ⟹ increasing = true)
+        rtsafe(g, gp, lo, hi, one(T), true)
     end
 
     # Recover x̃ from ρ
@@ -409,11 +412,10 @@ function powdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}, α::T) where 
     X2 = (b * ρ + α) / s2
     p = X1^a * X2^b
     φ = p / ρ
-    x3 = -s3 * φ / 2
 
     xs[1] = X1
     xs[2] = X2
-    xs[3] = x3
+    xs[3] = -s3 * φ / 2
 
     return xs
 end
