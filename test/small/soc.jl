@@ -180,7 +180,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-8, gap_tol=1e-8, itmax=200,
-            verbose=false  # set to true for debugging
+            verbose=false
         )
         result = solve(prob, settings)
 

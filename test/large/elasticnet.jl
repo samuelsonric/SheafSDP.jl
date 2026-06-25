@@ -156,7 +156,8 @@ function run_benchmark(; raug=1e5, scale=1, ε_R=0.01, λ=1.0)
         prob = IPMProblem(c_vec, g, B, Q, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
-            feas_tol=1e-8, gap_tol=1e-8, itmax=100
+            feas_tol=1e-8, gap_tol=1e-8, itmax=100,
+            scale_itmax=0  # equilibration breaks this problem
         )
         result = solve(prob, settings)
 

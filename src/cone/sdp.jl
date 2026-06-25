@@ -1,3 +1,9 @@
+"""
+    SemidefiniteCone <: Cone
+
+A cone of n × n positive-semidefinite
+matrices.
+"""
 struct SemidefiniteCone <: Cone end
 
 struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
@@ -138,7 +144,7 @@ function cache(c::Caches{T}, i::Integer, cone::SemidefiniteCone) where T
     n = c.xcol[i + 1] - c.xcol[i]
     d = triroot(n)
 
-    data = view(c.val, c.xblk[i]:c.xblk[i + 1] - 1)
+    data = cachedata(c, i)
 
     LP = reshape(view(data, 0d^2 + 1:1d^2    ), d, d)
     LD = reshape(view(data, 1d^2 + 1:2d^2    ), d, d)

@@ -40,7 +40,7 @@ end
 
 # construct view-based cache from Caches
 function cache(c::Caches{T}, i::Int, cone::PowerCone{T}) where T
-    data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
+    data = cachedata(c, i)
     M  = reshape(view(data, 1:9), 3, 3)
     R  = reshape(view(data, 10:18), 3, 3)
     xs = view(data, 19:21)

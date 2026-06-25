@@ -1,53 +1,67 @@
-#
-# SecondOrderCone (second-order / Lorentz cone)
-#
-# x = (x₀, x̄) ∈ SecondOrderCone iff x₀ ≥ ‖x̄‖
-#
+"""
+    SecondOrderCone <: Cone
 
+The n + 1-dimensional second-order cone,
+consisting of all pairs (x, y) such that
+y ≥ ‖x‖.
+"""
 struct SecondOrderCone <: Cone end
 
 struct SecondOrderConeCache{T} <: AbstractCache{SecondOrderCone}
     cone::SecondOrderCone
-    β::FScalarView{T}  # scaling factor (0-dim view)
-    w::FVectorView{T}  # direction vector (satisfies w'Jw = 1)
+    #
+    # the square root
+    #
+    #   β = √det(ω)
+    #
+    # of the deminant of the
+    # Nestorov-Todd scaling point.
+    #
+    β::FScalarView{T}
+    #
+    # the normalized Nestorov-Todd scaling
+    # point:
+    #
+    #   w = ω / β
+    #
+    w::FVectorView{T}
 end
 
-# degree = 2 (always, regardless of dimension)
 function degree(::SecondOrderCone, n::Int)
     return 2
 end
 
-# cache size: β(1) + w(n)
 function cachesize(::SecondOrderCone, n::Int)
     return 1 + n
 end
 
-# construct view-based cache from Caches
 function cache(c::Caches{T}, i::Int, cone::SecondOrderCone) where T
-    data = view(c.val, c.xblk[i]:c.xblk[i+1]-1)
+    data = cachedata(c, i)
     β = view(data, 1)
     w = view(data, 2:length(data))
     SecondOrderConeCache(cone, β, w)
 end
 
+# construct the identity element
+#
+#   e = (√2, 0, …, 0)
+#
 function identity!(x::AbstractVector{T}, ::SecondOrderCone) where {T}
-    # Jordan identity in isometric (scaled) coordinates: ẽ = √2·e
-    # This makes dot(e,e) = 2 = tr(e∘e), so Euclidean dot = trace inner product.
     fill!(x, zero(T))
     x[1] = sqrt(T(2))
     return x
 end
 
+# compute the J-inner product
 #
-# SOC helper functions
+#   xᵀ J y = x₁y₁ - x₂y₂ - … - xₙyₙ
 #
-
-# socdot: xᵀJy = x₀y₀ − Σ_{i≥2} xᵢyᵢ, compensated to ~2u
+# using compensated arithmetic.
 function socdot(x::AbstractVector{T}, y::AbstractVector{T}) where {T}
     @assert length(x) == length(y)
     n = length(x)
 
-    s, c = twoprod(x[1], y[1])   # s = x₀y₀, c = error
+    s, c = twoprod(x[1], y[1])
 
     @inbounds for i in 2:n
         p, e = twoprod(x[i], y[i])
@@ -58,12 +72,19 @@ function socdot(x::AbstractVector{T}, y::AbstractVector{T}) where {T}
     return s + c
 end
 
-# socdet: det(x) = x₀² − ‖x̄‖² = socdot(x, x)
+# compute the Jordan determinant
+#
+#   xᵀ J x = x₁x₁ - x₂x₂ - … - xₙxₙ
+#
+# using compensated arithmetic.
 function socdet(x::AbstractVector)
     return socdot(x, x)
 end
 
-# SOC multiplication (Jordan product): out = x ∘ y
+# compute the Jordan product
+#
+#   x ∘ y = (xᵀy, x₁y₂ + y₁x₂, ..., x₁yₙ + y₁xₙ)
+#
 function socmul!(out::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
     n = length(x)
 
@@ -79,7 +100,12 @@ function socmul!(out::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector
     return out
 end
 
-# SOC division: b ← z \ b (solve L(z)b_new = b_old)
+# solve for z in
+#
+#   y ∘ z = b,
+#
+# where y ∘ z is the Jordan product
+# of y and z.
 function socdiv!(z::AbstractVector{T}, b::AbstractVector{T}) where {T}
     n = length(z)
     δ = socdet(z)
@@ -100,7 +126,16 @@ function socdiv!(z::AbstractVector{T}, b::AbstractVector{T}) where {T}
     return b
 end
 
-# In-place H½ or H⁻½ application: x ← H½x (flag=false) or x ← H⁻½x (flag=true)
+# If flag = false, evaluate the product
+#
+#   y = √H x.
+#
+# If flag = true, solve for y:
+#
+#   √H y = x
+#
+# where H is the Hessian of the primal barrier
+# function at the Nesterov-Todd scaling point.
 function socroot!(x::AbstractVector{T}, w::AbstractVector{T}, β::T, flag::Bool) where {T}
     n = length(x)
 
@@ -131,13 +166,27 @@ function socroot!(x::AbstractVector{T}, w::AbstractVector{T}, β::T, flag::Bool)
     return x
 end
 
+# Compute the Nestorov-Todd scaling point
+# ω in factored form:
+#
+#   β = √det(ω)
+#   w = ω / β
+#
+# Then assemble the Hessian of the primal
+# barrier function evaluated at ω:
+#
+#   H = (2 (Jw)(Jw)ᵀ - J) / β²
+#
 function socscale!(
+        H::AbstractMatrix{T},
         w::AbstractVector{T},
         p::AbstractVector{T},
         d::AbstractVector{T}
     ) where {T}
     n = length(p)
-
+    #
+    # compute the scaling point ω
+    #
     pdet = socdet(p)
     ddet = socdet(d)
 
@@ -154,16 +203,11 @@ function socscale!(
     for i in 2:n
         w[i] = (p[i] / β - d[i] * β) / κ
     end
-
-    return β
-end
-
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SecondOrderConeCache{T}) where {T}
-    β = socscale!(cache.w, p, d)
-    cache.β[] = β
-
-    w = cache.w
-    n = length(w)
+    #
+    # assemble the Hessian
+    #
+    #   H = (2 (Jw)(Jw)ᵀ - J) / β²
+    #
     η = inv(β^2)
 
     w1 = w[1]; H[1, 1] = 2η * w1^2 - η
@@ -180,6 +224,11 @@ function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}
         end
     end
 
+    return β
+end
+
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SecondOrderConeCache{T}) where {T}
+    cache.β[] = socscale!(H, cache.w, p, d)
     return H
 end
 
@@ -193,6 +242,7 @@ function soccorr!(
         σμ::Real
     ) where {T}
     n = length(p)
+    pdet = socdet(p)
 
     socroot!(Δp, w, β, false)
     socroot!(Δd, w, β, true)
@@ -207,10 +257,6 @@ function soccorr!(
     axpy!(one(T), Δp, r)
     socroot!(r, w, β, false)
 
-    pdet = socdet(p)
-
-    # Factor of 2 is the scaled Jordan inverse: p̃⁻¹ = 2(p₁,-p̄)/det(p)
-    # This corrects the centering to use the full trace μ, not the half-trace.
     r[1] = 2σμ * p[1] / pdet - r[1]
 
     for i in 2:n
@@ -287,7 +333,11 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
             s = sqrt(max(d, zero(T)))
             q = -(b + copysign(s, b)) / 2
 
-            τ1 = b ≥ 0 ? q / a : c / q
+            if b ≥ 0
+                τ1 = q / a
+            else
+                τ1 = c / q
+            end
 
             if τ1 > 0
                 τ = min(τ, τ1)

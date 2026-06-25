@@ -95,6 +95,10 @@ Return a view-based cache struct for vertex i with the given cone type.
 """
 function cache end
 
+function cachedata(c::Caches, i::Integer)
+    return view(c.val, c.xblk[i]:c.xblk[i + 1] - 1)
+end
+
 function Caches(cones::AbstractVector, B::BlockSparseMatrix{T, I}) where {T, I}
     xcol = FVector{I}(undef, nvtxs(B) + one(I))
     xblk = FVector{I}(undef, nvtxs(B) + one(I))

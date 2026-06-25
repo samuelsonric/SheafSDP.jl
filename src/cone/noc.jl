@@ -1,7 +1,9 @@
-#
-# CofreeCone (no cone / free variables, K = ℝⁿ, K* = {0})
-#
+"""
+    CofreeCone <: Cone
 
+The cone of all n-dimensional Euclidean
+vectors.
+"""
 struct CofreeCone <: Cone end
 
 struct CofreeConeCache <: AbstractCache{CofreeCone}

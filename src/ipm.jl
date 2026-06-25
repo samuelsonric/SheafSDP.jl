@@ -204,8 +204,22 @@ function startingpoint(B::BlockSparseMatrix{T}, g::AbstractVector{T},
     Be = zeros(T, m)
     mul!(Be, B, e)
 
-    ξ = max(one(T), norm(g) / max(eps(T), norm(Be)))
-    η = max(one(T), norm(c) / max(eps(T), norm(e)))
+    # If Be ≈ 0, scaling ξ can't help reach g (need to move orthogonal to e).
+    # Cap the ratio to avoid blowing up when Be is tiny.
+    nBe = norm(Be)
+    ne = norm(e)
+
+    if nBe > eps(T) * ne
+        ξ = max(one(T), norm(g) / nBe)
+    else
+        ξ = one(T)
+    end
+
+    if ne > eps(T)
+        η = max(one(T), norm(c) / ne)
+    else
+        η = one(T)
+    end
 
     p = ξ .* e
     d = η .* e
