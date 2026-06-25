@@ -245,7 +245,7 @@ function rtsafe(f, fp, lo::T, hi::T, r0::T;
         fr = f(r)
 
         # tighten the bracket toward the root
-        if fr > 0
+        if fr >= 0
             hi = r
         else
             lo = r
@@ -274,7 +274,7 @@ function rtsafe_count(f, fp, lo::T, hi::T, r0::T;
     for k in 1:maxit
         fr = f(r)
 
-        if fr > 0
+        if fr >= 0
             hi = r
         else
             lo = r

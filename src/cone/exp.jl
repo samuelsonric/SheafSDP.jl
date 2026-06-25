@@ -22,8 +22,10 @@ struct ExponentialConeCache{T} <: AbstractCache{ExponentialCone}
     #
     ss::FVectorView{T}
     #
-    # Warm-start seed for the shadow primal
-    # solve (x̃₂ from previous iteration)
+    # warm-start for computing the primal
+    # "shadow" iterate, which solves
+    #
+    #   -f'(p*) = d 
     #
     x2::FScalarView{T}
 end
@@ -180,27 +182,13 @@ function expindual(z::AbstractVector)
     z[1] > 0 && z[3] < 0 && ℯ * z[1] >= -z[3] * exp(z[2] / z[3])
 end
 
-#
-# Compute the "shadow" primal x̃ solving F'(x̃) = -d,
-# reduced to a 1-D scalar root-find in x̃₂.
-#
-# Reduction:
-#   ψ̃ = -1/d₃           (d₃ < 0 for dual interior)
-#   x̃₁ = x̃₂/(ψ̃ d₁) + 1/d₁
-#   h(x̃₂) = (log(x̃₁/x̃₂) - 1)/ψ̃ + 1/x̃₂ - d₂ = 0
-#   x̃₃ = x̃₂ log(x̃₁/x̃₂) - ψ̃
-#
-# h is monotone decreasing with transcendental-free derivative.
-# Warm-started from x2_seed (previous x̃₂). Returns new x̃₂.
-#
-
 # compute the "shadow" primal, solving
 #
 #   f'(p*) = -d
 #
 # using a 1-D scalar root-find on the function
 #
-#   h(p₂*) = d₃ (1 - log(p₁* / p₂*)) + 1 / p₂* - d₂
+#   h(p₂*) = d₃ (log(p₁* / p₂*) - 1) - 1 / p₂* + d₂
 #
 # with
 #
@@ -217,27 +205,40 @@ function expdualgrad!(xs::AbstractVector{T}, seed::T, d::AbstractVector{T}) wher
     function hp(x2)
         -d3^2 / (one(T) - x2 * d3) - d3 / x2 + inv(x2^2)
     end
-
-    # bracket the root: h increasing, so find lo (h<0) and hi (h>0)
+    #
+    # bracket the function h, finding points lo and hi
+    # such that
+    #
+    #   h(lo) < 0 < h(hi)
+    #
     if h(seed) < 0
         lo = seed
         hi = seed * 2
+
         while h(hi) < 0
             hi *= 2
         end
     else
         hi = seed
         lo = seed / 2
+
         while h(lo) > 0
             lo /= 2
         end
     end
-
+    #
+    # find p₂* such that
+    #
+    #   h(p₂*) = 0
+    #
     x2 = rtsafe(h, hp, lo, hi, seed)
-
-    # recover the full shadow primal
-    x1 = (one(T) - x2 * d3) / d1
-    xs[1] = x1
+    #
+    # recover p* as
+    #
+    #   p₁* = (1 - p₂* d₃) / d₁
+    #   p₃* = p₂* log(p₁* / p₂*) + 1 / d₃
+    #
+    xs[1] = x1 = (one(T) - x2 * d3) / d1
     xs[2] = x2
     xs[3] = x2 * log(x1 / x2) + inv(d3)
 
