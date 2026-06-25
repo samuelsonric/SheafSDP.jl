@@ -267,3 +267,28 @@ function rtsafe(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
 
     return (lo + hi) / 2
 end
+
+# Version that also returns iteration count
+function rtsafe_count(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
+                      tol::T = T(1e-12), maxit::Int = 60) where {T}
+    r = clamp(r0, lo, hi)
+
+    for k in 1:maxit
+        fr = f(r)
+
+        if (fr > 0) == increasing
+            hi = r
+        else
+            lo = r
+        end
+
+        if hi - lo < tol * (one(T) + abs(r))
+            return (lo + hi) / 2, k
+        end
+
+        rn = r - fr / fp(r)
+        r = (lo < rn < hi) ? rn : (lo + hi) / 2
+    end
+
+    return (lo + hi) / 2, maxit
+end

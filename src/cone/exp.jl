@@ -16,17 +16,16 @@ struct ExponentialConeCache{T} <: AbstractCache{ExponentialCone}
     #
     R::FMatrixView{T}
     #
-    # The primal "shadow" iterate
+    # The dual "shadow" iterate
     #
     #   d* = -f'(p)
     #
-    xs::FVectorView{T}
-    #
-    # The dual "shadow" iterate, solving
-    #
-    #   d = -f'(p*)
-    #
     ss::FVectorView{T}
+    #
+    # Warm-start seed for the shadow primal
+    # solve (x̃₂ from previous iteration)
+    #
+    x2::FScalarView{T}
 end
 
 function degree(::ExponentialCone, n::Int)
@@ -36,15 +35,15 @@ end
 
 function cachesize(::ExponentialCone, n::Int)
     @assert n == 3
-    return 15
+    return 13
 end
 
 function cache(c::Caches{T}, i::Int, cone::ExponentialCone) where T
     data = cachedata(c, i)
     R  = reshape(view(data, 1:9), 3, 3)
-    xs = view(data, 10:12)
-    ss = view(data, 13:15)
-    ExponentialConeCache(cone, R, xs, ss)
+    ss = view(data, 10:12)
+    x2 = view(data, 13)
+    ExponentialConeCache(cone, R, ss, x2)
 end
 
 # compute the fixed point
@@ -62,8 +61,8 @@ function identity!(x::AbstractVector, ::ExponentialCone)
     return expid!(x)
 end
 
-function initcache!(cache::ExponentialConeCache)
-    identity!(cache.xs, cache.cone)
+function initcache!(cache::ExponentialConeCache{T}) where {T}
+    cache.x2[] = T(0.8051015526498357)  # identity point x₂
     return cache
 end
 
@@ -192,8 +191,9 @@ end
 #   x̃₃ = x̃₂ log(x̃₁/x̃₂) - ψ̃
 #
 # h is monotone decreasing with transcendental-free derivative.
+# Warm-started from x2_seed (previous x̃₂). Returns new x̃₂.
 #
-function expdualgrad!(xs::AbstractVector{T}, d::AbstractVector{T}) where {T}
+function expdualgrad!(xs::AbstractVector{T}, x2_seed::T, d::AbstractVector{T}) where {T}
     d1, d2, d3 = d[1], d[2], d[3]
 
     # pin ψ̃ from the third gradient equation
@@ -206,8 +206,10 @@ function expdualgrad!(xs::AbstractVector{T}, d::AbstractVector{T}) where {T}
     h(x2)  = (log(x1of(x2) / x2) - one(T)) / ψ + inv(x2) - d2
     hp(x2) = inv(ψ * (x2 + ψ)) - inv(ψ * x2) - inv(x2^2)
 
+    # warm start from previous x̃₂, or cold start if invalid
+    seed = x2_seed > zero(T) ? x2_seed : one(T)
+
     # bracket the root: h is decreasing, so find lo (h>0) and hi (h<0)
-    seed = one(T)
     lo, hi = if h(seed) > 0
         lo_tmp = seed
         hi_tmp = 2 * seed
@@ -233,7 +235,7 @@ function expdualgrad!(xs::AbstractVector{T}, d::AbstractVector{T}) where {T}
     xs[2] = x2
     xs[3] = x2 * log(x1 / x2) - ψ
 
-    return xs
+    return x2
 end
 
 # Compute the coefficient t in the rank-1 term
@@ -328,12 +330,13 @@ end
 function expscale!(
         H::AbstractMatrix{T},
         R::AbstractMatrix{T},
-        xs::AbstractVector{T},
         ss::AbstractVector{T},
+        x2_seed::T,
         x::AbstractVector{T},
         s::AbstractVector{T}
     ) where {T}
 
+    xs = zeros(T, 3)
     z  = zeros(T, 3)
     δx = zeros(T, 3)
     δs = zeros(T, 3)
@@ -355,7 +358,7 @@ function expscale!(
     #
     #   d = -f'(p*)
     #
-    expdualgrad!(xs, s)
+    x2_new = expdualgrad!(xs, x2_seed, s)
     #
     # compute the centrality parameters
     #
@@ -437,11 +440,11 @@ function expscale!(
         end
     end
 
-    return H
+    return x2_new
 end
 
 function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::ExponentialConeCache{T}) where {T}
-    expscale!(H, cache.R, cache.xs, cache.ss, p, d)
+    cache.x2[] = expscale!(H, cache.R, cache.ss, cache.x2[], p, d)
     return H
 end
 

@@ -21,6 +21,7 @@ struct PowerConeCache{T} <: AbstractCache{PowerCone{T}}
     cone::PowerCone{T}
     R::FMatrixView{T}     # factor of F''(x) in (3,1,2) order (3×3)
     ss::FVectorView{T}    # shadow dual s̃ = -F'(x) (3)
+    ρ::FScalarView{T}     # warm-start seed for ρ (1 scalar)
 end
 
 # degree = 3 always (POW is intrinsically 3D)
@@ -31,14 +32,15 @@ end
 
 function cachesize(::PowerCone, n::Int)
     @assert n == 3 "PowerCone is 3-dimensional"
-    return 12
+    return 13
 end
 
 function cache(c::Caches{T}, i::Int, cone::PowerCone{T}) where T
     data = cachedata(c, i)
     R  = reshape(view(data, 1:9), 3, 3)
     ss = view(data, 10:12)
-    PowerConeCache(cone, R, ss)
+    ρ  = view(data, 13)
+    PowerConeCache(cone, R, ss, ρ)
 end
 
 # Central point: x₀ = s₀ = (√(1+α), √(2-α), 0)
@@ -51,6 +53,7 @@ function identity!(x::AbstractVector{T}, cone::PowerCone{T}) where {T}
 end
 
 function initcache!(cache::PowerConeCache{T}) where {T}
+    cache.ρ[] = one(T)
     return cache
 end
 
@@ -370,10 +373,11 @@ end
 #   g(ρ) = ρ(ρ-1) - (s₃²/4) X₁(ρ)^(2α) X₂(ρ)^(2(1-α)) = 0
 #
 # Uses safeguarded Newton with bracket fallback.
+# Warm-started from ρ_seed (previous ρ, scale-invariant).
 # Shortcuts: s₃=0 ⟹ ρ*=1; α=1/2 ⟹ quadratic closed form.
 #
 
-function powdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}, α::T) where {T}
+function powdualgrad!(xs::AbstractVector{T}, ρ_seed::T, s::AbstractVector{T}, α::T) where {T}
     s1, s2, s3 = s[1], s[2], s[3]
     a = 2 * α
     b = 2 * (one(T) - α)
@@ -396,15 +400,18 @@ function powdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}, α::T) where 
         gp(ρ) = (2ρ - one(T)) - k * X1(ρ)^a * X2(ρ)^b *
                 (a^2 / (a * ρ + one(T) - α) + b^2 / (b * ρ + α))
 
+        # Warm start from previous ρ (scale-invariant, stays O(1))
+        seed = ρ_seed >= one(T) ? ρ_seed : one(T)
+
         # Build bracket: lo=1 (g(1)≤0 always), grow hi until g(hi)>0
         lo = one(T)
-        hi = 2 * one(T)
+        hi = max(2 * seed, 2 * one(T))
         while g(hi) ≤ 0
             hi *= 2
         end
 
         # Safeguarded Newton (g increasing ⟹ increasing = true)
-        rtsafe(g, gp, lo, hi, one(T), true)
+        rtsafe(g, gp, lo, hi, seed, true)
     end
 
     # Recover x̃ from ρ
@@ -417,7 +424,7 @@ function powdualgrad!(xs::AbstractVector{T}, s::AbstractVector{T}, α::T) where 
     xs[2] = X2
     xs[3] = -s3 * φ / 2
 
-    return xs
+    return ρ
 end
 
 #
@@ -464,6 +471,7 @@ function powscale!(
         H::AbstractMatrix{T},
         R::AbstractMatrix{T},
         ss::AbstractVector{T},
+        ρ_seed::T,
         x::AbstractVector{T},
         s::AbstractVector{T},
         α::T
@@ -480,8 +488,8 @@ function powscale!(
     powbarrgrad!(ss, x, α)
     lmul!(-1, ss)
 
-    # Stage 2: Shadow primal x̃ (cold 1-D solve, no warm start needed)
-    powdualgrad!(xs, s, α)
+    # Stage 2: Shadow primal x̃ (warm-started 1-D solve)
+    ρ_new = powdualgrad!(xs, ρ_seed, s, α)
 
     # Block-local μ and μ̃
     μv = dot3(x, s) / 3
@@ -533,7 +541,7 @@ function powscale!(
 end
 
 function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::PowerConeCache{T}) where {T}
-    powscale!(H, cache.R, cache.ss, p, d, cache.cone.α)
+    powscale!(H, cache.R, cache.ss, cache.ρ, p, d, cache.cone.α)
     return H
 end
 
