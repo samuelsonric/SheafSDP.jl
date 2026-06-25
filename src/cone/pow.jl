@@ -19,11 +19,8 @@ PowerCone(α::T) where {T} = PowerCone{T}(α)
 
 struct PowerConeCache{T} <: AbstractCache{PowerCone{T}}
     cone::PowerCone{T}
-    M::FMatrixView{T}     # scaling Gram matrix (3×3)
     R::FMatrixView{T}     # factor of F''(x) in (3,1,2) order (3×3)
-    xs::FVectorView{T}    # shadow primal x̃ (3)
     ss::FVectorView{T}    # shadow dual s̃ = -F'(x) (3)
-    μv::FScalarView{T}    # block-local μ = ⟨x,s⟩/3
 end
 
 # degree = 3 always (POW is intrinsically 3D)
@@ -32,21 +29,16 @@ function degree(::PowerCone, n::Int)
     return 3
 end
 
-# cache size: M(9) + R(9) + xs(3) + ss(3) + μv(1) = 25
 function cachesize(::PowerCone, n::Int)
     @assert n == 3 "PowerCone is 3-dimensional"
-    return 25
+    return 12
 end
 
-# construct view-based cache from Caches
 function cache(c::Caches{T}, i::Int, cone::PowerCone{T}) where T
     data = cachedata(c, i)
-    M  = reshape(view(data, 1:9), 3, 3)
-    R  = reshape(view(data, 10:18), 3, 3)
-    xs = view(data, 19:21)
-    ss = view(data, 22:24)
-    μv = view(data, 25)
-    PowerConeCache(cone, M, R, xs, ss, μv)
+    R  = reshape(view(data, 1:9), 3, 3)
+    ss = view(data, 10:12)
+    PowerConeCache(cone, R, ss)
 end
 
 # Central point: x₀ = s₀ = (√(1+α), √(2-α), 0)
@@ -58,9 +50,7 @@ function identity!(x::AbstractVector{T}, cone::PowerCone{T}) where {T}
     return x
 end
 
-# Initialize cache.xs to identity point
 function initcache!(cache::PowerConeCache{T}) where {T}
-    identity!(cache.xs, cache.cone)
     return cache
 end
 
@@ -469,9 +459,8 @@ end
 #
 
 function powscale!(
-        M::AbstractMatrix{T},
         H::AbstractMatrix{T},
-        xs::AbstractVector{T},
+        R::AbstractMatrix{T},
         ss::AbstractVector{T},
         x::AbstractVector{T},
         s::AbstractVector{T},
@@ -479,16 +468,17 @@ function powscale!(
     ) where {T}
 
     # Workspace
+    xs = zeros(T, 3)
     z  = zeros(T, 3)
     δx = zeros(T, 3)
     δs = zeros(T, 3)
 
-    # Stage 1: Hessian F''(x), shadow dual s̃ = -F'(x)
-    powhess!(H, x, α)
+    # Stage 1: Hessian F''(x) into R, shadow dual s̃ = -F'(x)
+    powhess!(R, x, α)
     powbarrgrad!(ss, x, α)
     lmul!(-1, ss)
 
-    # Stage 2: Shadow primal x̃
+    # Stage 2: Shadow primal x̃ (cold 1-D solve, no warm start needed)
     powdualgrad!(xs, s, α)
 
     # Block-local μ and μ̃
@@ -505,22 +495,22 @@ function powscale!(
     rel_z = nz / (nx * nxs + eps(T))
 
     if rel_z < eps(T)
-        # On or near central path: M = μ F''(x)
-        copyto!(M, H)
-        lmul3!(μv, M)
+        # On or near central path: H = μ F''(x)
+        copyto!(H, R)
+        lmul3!(μv, H)
     else
         # Normalize z
         ldiv3!(nz, z)
 
-        # BFGS t (uses H for matvecs)
-        t = powbfgs(H, xs, ss, z, x, μv, μt)
+        # BFGS t (uses R for matvecs, R still holds Hessian)
+        t = powbfgs(R, xs, ss, z, x, μv, μt)
 
         if !(t > 0) || !isfinite(t)
             # Fallback to μF''
-            copyto!(M, H)
-            lmul3!(μv, M)
+            copyto!(H, R)
+            lmul3!(μv, H)
         else
-            # M = ssᵀ/⟨x,s⟩ + δsδsᵀ/⟨δx,δs⟩ + tzzᵀ
+            # H = ssᵀ/⟨x,s⟩ + δsδsᵀ/⟨δx,δs⟩ + tzzᵀ
             xs_dot = 3 * μv
 
             copy3!(δx, x);  axpy3!(-μv, xs, δx)
@@ -528,22 +518,20 @@ function powscale!(
 
             δ_dot = dot3(δx, δs)
 
-            ger3!(M, s, s, inv(xs_dot), 0)
-            ger3!(M, δs, δs, inv(δ_dot), 1)
-            ger3!(M, z, z, t, 1)
+            ger3!(H, s, s, inv(xs_dot), 0)
+            ger3!(H, δs, δs, inv(δ_dot), 1)
+            ger3!(H, z, z, t, 1)
         end
     end
 
-    # Structured Cholesky H for corrector solve (pivot order 3,1,2)
-    powchol3!(H, H, x, α)
+    # Structured Cholesky into R for corrector solve (pivot order 3,1,2)
+    powchol3!(R, R, x, α)
 
-    return μv
+    return H
 end
 
 function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::PowerConeCache{T}) where {T}
-    α = cache.cone.α
-    cache.μv[] = powscale!(cache.M, cache.R, cache.xs, cache.ss, p, d, α)
-    copyto!(H, cache.M)
+    powscale!(H, cache.R, cache.ss, p, d, cache.cone.α)
     return H
 end
 
@@ -554,6 +542,7 @@ end
 function powcorr!(
         r::AbstractVector{T},
         R::AbstractMatrix{T},
+        ss::AbstractVector{T},
         p::AbstractVector{T},
         d::AbstractVector{T},
         Δp::AbstractVector{T},
@@ -562,14 +551,9 @@ function powcorr!(
         α::T
     ) where {T}
 
-    # Workspaces
-    Fp = zeros(T, 3)
     v  = zeros(T, 3)
     η  = zeros(T, 3)
     D  = zeros(T, 3, 3)
-
-    # F'(p)
-    powbarrgrad!(Fp, p, α)
 
     # v = F''(p)⁻¹Δd via structured Cholesky factor (stored in R, permuted 3,1,2)
     copy3!(v, Δd)
@@ -579,9 +563,9 @@ function powcorr!(
     powbarrhess!(D, p, Δp, α)
     mul3!(η, D, v, -0.5, 0)
 
-    # r = -d - σμ·F'(p) - η
+    # r = -d - σμ·F'(p) - η = -d + σμ·ss - η (since ss = -F'(p))
     copy3!(r, d)
-    axpby3!(-σμ, Fp, -1, r)
+    axpby3!(σμ, ss, -1, r)
     axpy3!(-1, η, r)
 
     return r
@@ -596,7 +580,7 @@ function corr!(
         σμ::Real,
         cache::PowerConeCache{T}
     ) where {T}
-    return powcorr!(r, cache.R, p, d, Δp, Δd, σμ, cache.cone.α)
+    return powcorr!(r, cache.R, cache.ss, p, d, Δp, Δd, σμ, cache.cone.α)
 end
 
 #
