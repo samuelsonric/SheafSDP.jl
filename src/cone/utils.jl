@@ -233,7 +233,7 @@ end
 # where f(lo) < 0 < f(hi) (increasing across bracket).
 # Takes the Newton step r - f/f' when it lands inside
 # the bracket, otherwise a bisection step. Converges on
-# the RELATIVE bracket width.
+# the RELATIVE step size.
 #
 # For decreasing functions, negate f and f' at the call site.
 #
@@ -242,6 +242,7 @@ function rtsafe(f, fp, lo::T, hi::T, r0::T;
     r = clamp(r0, lo, hi)
 
     for _ in 1:maxit
+        rp = r
         fr = f(r)
 
         # tighten the bracket toward the root
@@ -251,42 +252,19 @@ function rtsafe(f, fp, lo::T, hi::T, r0::T;
             lo = r
         end
 
-        # converge on the relative bracket width
-        if hi - lo < tol * (one(T) + abs(r))
-            return (lo + hi) / 2
-        end
-
         # Newton step, safeguarded into a bisection
         # step if it would leave the bracket
-        rn = r - fr / fp(r)
+        r = r - fr / fp(r)
 
-        r = (lo < rn < hi) ? rn : (lo + hi) / 2
-    end
-
-    return (lo + hi) / 2
-end
-
-# Version that also returns iteration count
-function rtsafe_count(f, fp, lo::T, hi::T, r0::T;
-                      tol::T = T(1e-12), maxit::Int = 60) where {T}
-    r = clamp(r0, lo, hi)
-
-    for k in 1:maxit
-        fr = f(r)
-
-        if fr >= 0
-            hi = r
-        else
-            lo = r
+        if !(lo < r < hi)
+            r = (lo + hi) / 2
         end
 
-        if hi - lo < tol * (one(T) + abs(r))
-            return (lo + hi) / 2, k
+        # converge on the relative step size
+        if abs(r - rp) < tol * (one(T) + abs(r))
+            break
         end
-
-        rn = r - fr / fp(r)
-        r = (lo < rn < hi) ? rn : (lo + hi) / 2
     end
 
-    return (lo + hi) / 2, maxit
+    return r
 end
