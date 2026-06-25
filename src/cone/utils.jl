@@ -230,16 +230,14 @@ end
 
 #
 # Safeguarded Newton on a scalar root of f in [lo, hi],
-# where f(lo) and f(hi) have opposite signs. Takes the
-# Newton step r - f/f' when it lands inside the bracket,
-# otherwise a bisection step. Converges on the RELATIVE
-# bracket width.
+# where f(lo) < 0 < f(hi) (increasing across bracket).
+# Takes the Newton step r - f/f' when it lands inside
+# the bracket, otherwise a bisection step. Converges on
+# the RELATIVE bracket width.
 #
-# `increasing` records the sign convention: true if f
-# crosses from negative to positive (f' > 0 at the root),
-# false if from positive to negative.
+# For decreasing functions, negate f and f' at the call site.
 #
-function rtsafe(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
+function rtsafe(f, fp, lo::T, hi::T, r0::T;
                 tol::T = T(1e-12), maxit::Int = 60) where {T}
     r = clamp(r0, lo, hi)
 
@@ -247,7 +245,7 @@ function rtsafe(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
         fr = f(r)
 
         # tighten the bracket toward the root
-        if (fr > 0) == increasing
+        if fr > 0
             hi = r
         else
             lo = r
@@ -269,14 +267,14 @@ function rtsafe(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
 end
 
 # Version that also returns iteration count
-function rtsafe_count(f, fp, lo::T, hi::T, r0::T, increasing::Bool;
+function rtsafe_count(f, fp, lo::T, hi::T, r0::T;
                       tol::T = T(1e-12), maxit::Int = 60) where {T}
     r = clamp(r0, lo, hi)
 
     for k in 1:maxit
         fr = f(r)
 
-        if (fr > 0) == increasing
+        if fr > 0
             hi = r
         else
             lo = r

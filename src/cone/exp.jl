@@ -62,7 +62,7 @@ function identity!(x::AbstractVector, ::ExponentialCone)
 end
 
 function initcache!(cache::ExponentialConeCache{T}) where {T}
-    cache.x2[] = T(0.8051015526498357)  # identity point x₂
+    cache.x2[] = 0.8051015526498357
     return cache
 end
 
@@ -193,47 +193,53 @@ end
 # h is monotone decreasing with transcendental-free derivative.
 # Warm-started from x2_seed (previous x̃₂). Returns new x̃₂.
 #
-function expdualgrad!(xs::AbstractVector{T}, x2_seed::T, d::AbstractVector{T}) where {T}
+
+# compute the "shadow" primal, solving
+#
+#   f'(p*) = -d
+#
+# using a 1-D scalar root-find on the function
+#
+#   h(p₂*) = d₃ (1 - log(p₁* / p₂*)) + 1 / p₂* - d₂
+#
+# with
+#
+#   p₁* = (1 - p₂* d₃) / d₁
+#   p₃* = p₂* log(p₁* / p₂*) + 1 / d₃
+#
+function expdualgrad!(xs::AbstractVector{T}, seed::T, d::AbstractVector{T}) where {T}
     d1, d2, d3 = d[1], d[2], d[3]
 
-    # pin ψ̃ from the third gradient equation
-    ψ = -inv(d3)
-
-    # x̃₁ as a function of x̃₂
-    x1of(x2) = x2 / (ψ * d1) + inv(d1)
-
-    # scalar root h(x̃₂) = 0
-    h(x2)  = (log(x1of(x2) / x2) - one(T)) / ψ + inv(x2) - d2
-    hp(x2) = inv(ψ * (x2 + ψ)) - inv(ψ * x2) - inv(x2^2)
-
-    # warm start from previous x̃₂, or cold start if invalid
-    seed = x2_seed > zero(T) ? x2_seed : one(T)
-
-    # bracket the root: h is decreasing, so find lo (h>0) and hi (h<0)
-    lo, hi = if h(seed) > 0
-        lo_tmp = seed
-        hi_tmp = 2 * seed
-        while h(hi_tmp) > 0
-            hi_tmp *= 2
-        end
-        (lo_tmp, hi_tmp)
-    else
-        hi_tmp = seed
-        lo_tmp = seed / 2
-        while h(lo_tmp) < 0
-            lo_tmp /= 2
-        end
-        (lo_tmp, hi_tmp)
+    function h(x2)
+        d3 * (log((one(T) - x2 * d3) / (d1 * x2)) - one(T)) - inv(x2) + d2
     end
 
-    # safeguarded Newton (h decreasing ⟹ increasing = false)
-    x2 = rtsafe(h, hp, lo, hi, seed, false)
+    function hp(x2)
+        -d3^2 / (one(T) - x2 * d3) - d3 / x2 + inv(x2^2)
+    end
+
+    # bracket the root: h increasing, so find lo (h<0) and hi (h>0)
+    if h(seed) < 0
+        lo = seed
+        hi = seed * 2
+        while h(hi) < 0
+            hi *= 2
+        end
+    else
+        hi = seed
+        lo = seed / 2
+        while h(lo) > 0
+            lo /= 2
+        end
+    end
+
+    x2 = rtsafe(h, hp, lo, hi, seed)
 
     # recover the full shadow primal
-    x1 = x1of(x2)
+    x1 = (one(T) - x2 * d3) / d1
     xs[1] = x1
     xs[2] = x2
-    xs[3] = x2 * log(x1 / x2) - ψ
+    xs[3] = x2 * log(x1 / x2) + inv(d3)
 
     return x2
 end

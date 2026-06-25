@@ -400,8 +400,7 @@ function powdualgrad!(xs::AbstractVector{T}, ρ_seed::T, s::AbstractVector{T}, �
         gp(ρ) = (2ρ - one(T)) - k * X1(ρ)^a * X2(ρ)^b *
                 (a^2 / (a * ρ + one(T) - α) + b^2 / (b * ρ + α))
 
-        # Warm start from previous ρ (scale-invariant, stays O(1))
-        seed = ρ_seed >= one(T) ? ρ_seed : one(T)
+        seed = ρ_seed
 
         # Build bracket: lo=1 (g(1)≤0 always), grow hi until g(hi)>0
         lo = one(T)
@@ -410,8 +409,7 @@ function powdualgrad!(xs::AbstractVector{T}, ρ_seed::T, s::AbstractVector{T}, �
             hi *= 2
         end
 
-        # Safeguarded Newton (g increasing ⟹ increasing = true)
-        rtsafe(g, gp, lo, hi, seed, true)
+        rtsafe(g, gp, lo, hi, seed)
     end
 
     # Recover x̃ from ρ
@@ -537,11 +535,11 @@ function powscale!(
     # Structured Cholesky into R for corrector solve (pivot order 3,1,2)
     powchol3!(R, R, x, α)
 
-    return H
+    return ρ_new
 end
 
 function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::PowerConeCache{T}) where {T}
-    powscale!(H, cache.R, cache.ss, cache.ρ, p, d, cache.cone.α)
+    cache.ρ[] = powscale!(H, cache.R, cache.ss, cache.ρ[], p, d, cache.cone.α)
     return H
 end
 
