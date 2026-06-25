@@ -518,7 +518,7 @@ function corr!(
     return expcorr!(r, cache.R, cache.ss, p, d, Δp, Δd, σμ)
 end
 
-# use bisection to find the largest number 0 < τ ≤ 1\
+# use bisection to find the largest number 0 < τ ≤ 1
 # such that
 #
 #   x + τ Δx
