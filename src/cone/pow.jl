@@ -1,41 +1,60 @@
-#
-# PowerCone: 3D power cone with parameter α ∈ (0,1)
-#
-# P_α = { x ∈ R³ : x₁^α x₂^(1-α) ≥ |x₃|, x₁,x₂ ≥ 0 }
-#
-# Barrier: F(x) = -log(x₁^(2α) x₂^(2(1-α)) - x₃²) - (1-α)log(x₁) - α log(x₂)
-#
-
+"""
+    PowerCone{T} <: Cone
+ 
+The three-dimensional power cone with parameter α ∈ (0, 1),
+consisting of all triples (x₁, x₂, x₃) such that
+x₁ ≥ 0, x₂ ≥ 0, and x₁^α x₂^(1-α) ≥ |x₃|.
+"""
 struct PowerCone{T} <: Cone
     α::T
 
-    function PowerCone{T}(α::T) where {T}
-        (0 < α < 1) || throw(ArgumentError("PowerCone requires 0 < α < 1, got α = $α"))
+    function PowerCone{T}(α) where {T}
+        @assert 0 < α < 1
         return new{T}(α)
     end
 end
 
-PowerCone(α::T) where {T} = PowerCone{T}(α)
+function PowerCone(α::T) where {T}
+    return PowerCone{T}(α)
+end
 
 struct PowerConeCache{T} <: AbstractCache{PowerCone{T}}
     cone::PowerCone{T}
-    R::FMatrixView{T}     # factor of F''(x) in (3,1,2) order (3×3)
-    ss::FVectorView{T}    # shadow dual s̃ = -F'(x) (3)
-    ρ::FScalarView{T}     # warm-start seed for ρ (1 scalar)
+    #
+    # The permuted Cholesky factor of the
+    # barrier Hessian
+    #
+    #   P f''(p) Pᵀ = L Lᵀ
+    #
+    # with pivot order (3, 1, 2).
+    #
+    R::FMatrixView{T}
+    #
+    # The dual "shadow" iterate
+    #
+    #   d* = -f'(p)
+    #
+    ss::FVectorView{T}
+    #
+    # warm-start for computing the primal
+    # "shadow" iterate p*, which solves
+    #
+    #   -f'(p*) = d
+    #
+    ρ::FScalarView{T}
 end
 
-# degree = 3 always (POW is intrinsically 3D)
-function degree(::PowerCone, n::Int)
-    @assert n == 3 "PowerCone is 3-dimensional"
+function degree(::PowerCone, n::Integer)
+    @assert n == 3
     return 3
 end
 
-function cachesize(::PowerCone, n::Int)
-    @assert n == 3 "PowerCone is 3-dimensional"
+function cachesize(::PowerCone, n::Integer)
+    @assert n == 3
     return 13
 end
 
-function cache(c::Caches{T}, i::Int, cone::PowerCone{T}) where T
+function cache(c::Caches, i::Integer, cone::PowerCone)
     data = cachedata(c, i)
     R  = reshape(view(data, 1:9), 3, 3)
     ss = view(data, 10:12)
@@ -43,308 +62,213 @@ function cache(c::Caches{T}, i::Int, cone::PowerCone{T}) where T
     PowerConeCache(cone, R, ss, ρ)
 end
 
-# Central point: x₀ = s₀ = (√(1+α), √(2-α), 0)
-function identity!(x::AbstractVector{T}, cone::PowerCone{T}) where {T}
+# construct the identity element
+#
+#   e = (√(1 + α), √(2 - α), 0)
+#
+function identity!(x::AbstractVector, cone::PowerCone)
     α = cone.α
-    x[1] = sqrt(one(T) + α)
-    x[2] = sqrt(2 * one(T) - α)
-    x[3] = zero(T)
+    x[1] = sqrt(1 + α)
+    x[2] = sqrt(2 - α)
+    x[3] = false
     return x
 end
 
-function initcache!(cache::PowerConeCache{T}) where {T}
-    cache.ρ[] = one(T)
+function initcache!(cache::PowerConeCache)
+    cache.ρ[] = true
     return cache
 end
 
+# evaluate the barrier argument
 #
-# Shared scalars
+#   φ(p) = p₁ᵃ p₂ᵇ - p₃²
 #
-# a = 2α, b = 2(1-α)
-# p = x₁^a * x₂^b (power product)
-# φ = p - x₃² (barrier argument)
-# ρ = p / φ (≥ 1, equality iff x₃ = 0)
+# where
 #
-
-function powphi(x::AbstractVector{T}, α::T) where {T}
-    a = 2 * α
-    b = 2 * (one(T) - α)
-    p = x[1]^a * x[2]^b
-    return p - x[3]^2
+#   - a = 2α
+#   - b = 2 - 2α
+#
+function powphi(x::AbstractVector, α)
+    a = 2α
+    b = 2 - 2α
+    return x[1]^a * x[2]^b - x[3]^2
 end
 
+# evaluate the gradient
 #
-# Gradient F'(x)
+#   f'(p)
 #
-# F'(x) = (-a*p/(x₁ φ) - (1-α)/x₁, -b*p/(x₂ φ) - α/x₂, 2x₃/φ)
-#
-
-function powbarrgrad!(g::AbstractVector{T}, x::AbstractVector{T}, α::T) where {T}
-    a = 2 * α
-    b = 2 * (one(T) - α)
+# of the barrier function f.
+function powbarrgrad!(g::AbstractVector, x::AbstractVector, α)
+    a = 2α
+    b = 2 - 2α
     p = x[1]^a * x[2]^b
-    φ = p - x[3]^2
+    φ = p - x[3] * x[3]
+    ρ = p / φ
 
-    g[1] = -a * p / (x[1] * φ) - (one(T) - α) / x[1]
-    g[2] = -b * p / (x[2] * φ) - α / x[2]
-    g[3] = 2 * x[3] / φ
+    g[1] = -(a * ρ + 1 - α) / x[1]
+    g[2] = -(b * ρ     + α) / x[2]
+    g[3] =  2x[3] / φ
 
     return g
 end
 
+# evaluate the Hessian
 #
-# Hessian F''(x) with cancellation-free entries
+#   f''(p)
 #
-# Entries:
-#   d₁ = (2ρa + b)/(2 x₁²)
-#   d₂ = (2ρb + a)/(2 x₂²)
-#   F″₁₁ = d₁ + a² p x₃² /(x₁² φ²)
-#   F″₂₂ = d₂ + b² p x₃² /(x₂² φ²)
-#   F″₁₂ = a b p x₃² /(x₁ x₂ φ²)
-#   F″₃₃ = 2 (p + x₃²) / φ²
-#   F″₁₃ = -2 a x₃ p /(x₁ φ²)
-#   F″₂₃ = -2 b x₃ p /(x₂ φ²)
-#
-
-function powhess!(H::AbstractMatrix{T}, x::AbstractVector{T}, α::T) where {T}
+# of the barrier function f.
+function powbarrhess!(H::AbstractMatrix, x::AbstractVector, α)
     x1, x2, x3 = x[1], x[2], x[3]
-    a = 2 * α
-    b = 2 * (one(T) - α)
+
+    a = 2α
+    b = 2 - 2α
     p = x1^a * x2^b
-    φ = p - x3^2
-    ρ = p / φ
+    φ = p - x3 * x3
 
-    d1 = (2 * ρ * a + b) / (2 * x1^2)
-    d2 = (2 * ρ * b + a) / (2 * x2^2)
+    ρ  = p / φ
+    w  = p / (φ * φ)
+    wx = w * x3 * x3
+    l1 = a / x1
+    l2 = b / x2
 
-    H[1,1] = d1 + a^2 * p * x3^2 / (x1^2 * φ^2)
-    H[2,2] = d2 + b^2 * p * x3^2 / (x2^2 * φ^2)
-    H[1,2] = a * b * p * x3^2 / (x1 * x2 * φ^2)
+    d1 = (2ρ * a + b) / (2x1 * x1)
+    d2 = (2ρ * b + a) / (2x2 * x2)
+
+    H[1,1] = l1 * l1 * wx + d1
+    H[2,2] = l2 * l2 * wx + d2
+    H[1,2] = l1 * l2 * wx
+
+    H[3,3] = 2(p + x3 * x3) / (φ * φ)
+
+    H[1,3] = -2l1 * x3 * w
+    H[2,3] = -2l2 * x3 * w
+
     H[2,1] = H[1,2]
-    H[3,3] = 2 * (p + x3^2) / φ^2
-    H[1,3] = -2 * a * x3 * p / (x1 * φ^2)
     H[3,1] = H[1,3]
-    H[2,3] = -2 * b * x3 * p / (x2 * φ^2)
     H[3,2] = H[2,3]
 
     return H
 end
 
+# factorize the Hessian
 #
-# Structured Cholesky factorization with (3,1,2) pivot order
+#   P f''(p) Pᵀ = L Lᵀ
 #
-# The naive (1,2,3) Cholesky loses all digits when φ → 0 because the
-# Schur complement accumulates O(φ⁻²) terms that cancel. Pivoting
-# coordinate 3 first and using the symbolic collapse
-#
-#   c = p x₃² / (φ (p + x₃²))
-#
-# which is O(φ⁻¹), preserves ~6 more digits near the boundary.
-#
-# L is stored in (3,1,2) permuted order:
-#   row/col 1 of L corresponds to original coord 3
-#   row/col 2 of L corresponds to original coord 1
-#   row/col 3 of L corresponds to original coord 2
-#
-
-function powchol3!(L::AbstractMatrix{T}, H::AbstractMatrix{T}, x::AbstractVector{T}, α::T) where {T}
+# of the barrier function f, using
+# the pivot order (3, 1, 2).
+function powchol3!(L::AbstractMatrix, H::AbstractMatrix, x::AbstractVector, α)
     x1, x2, x3 = x[1], x[2], x[3]
-    a = 2 * α
-    b = 2 * (one(T) - α)
+
+    a = 2α
+    b = 2 - 2α
     p = x1^a * x2^b
     φ = p - x3^2
 
-    # Diagonal scalars from powhess! (recomputed for numerical stability)
     ρ = p / φ
-    d1 = (2 * ρ * a + b) / (2 * x1^2)
-    d2 = (2 * ρ * b + a) / (2 * x2^2)
+    d1 = (2ρ * a + b) / 2x1^2
+    d2 = (2ρ * b + a) / 2x2^2
 
-    # Schur collapse coefficient: O(φ⁻¹) instead of O(φ⁻²)
     c = p * x3^2 / (φ * (p + x3^2))
 
-    # Log-gradient components
-    ℓ1 = a / x1
-    ℓ2 = b / x2
+    l1 = a / x1
+    l2 = b / x2
 
-    # Radicands for the three pivots
-    D33 = H[3,3]                                    # 2(p + x₃²)/φ²
-    r1  = d1 - c * ℓ1^2
-    r2  = (d1 * d2 - c * (d1 * ℓ2^2 + d2 * ℓ1^2)) / r1
+    D33 = H[3,3]
 
-    # Build L in (3,1,2) permuted storage
-    L[1,1] = sqrt(D33)
+    r1  =  d1      - c *  l1^2
+    r2  = (d1 * d2 - c * (l2^2 * d1 + l1^2 * d2)) / r1
+
+    L[1,1] = sqrt(H[3,3])
+
     L[2,1] = H[1,3] / L[1,1]
     L[3,1] = H[2,3] / L[1,1]
+
     L[2,2] = sqrt(r1)
-    L[3,2] = -c * ℓ1 * ℓ2 / L[2,2]
     L[3,3] = sqrt(r2)
 
-    # Zero upper triangle (not strictly necessary but clean)
-    L[1,2] = zero(T)
-    L[1,3] = zero(T)
-    L[2,3] = zero(T)
+    L[3,2] = -c * l1 * l2 / L[2,2]
+
+    L[1,2] = false
+    L[1,3] = false
+    L[2,3] = false
 
     return L
 end
 
-# Solve H⁻¹ b via structured Cholesky L Lᵀ = P H Pᵀ (permutation 3,1,2)
+# solve for x in
+#
+#   f''(p) x = b
+#
+# using a pre-computed factorization
+#
+#   P f''(p) Pᵀ = L Lᵀ
+#
 function powldiv3!(L::AbstractMatrix{T}, b::AbstractVector{T}) where {T}
-    # Forward substitution: solve L y = Pb
-    # Permute b from (1,2,3) to (3,1,2): [b₃, b₁, b₂]
     b1, b2, b3 = b[1], b[2], b[3]
-    y1 = b3 / L[1,1]
-    y2 = (b1 - L[2,1] * y1) / L[2,2]
+
+    y1 =  b3                              / L[1,1]
+    y2 = (b1 - L[2,1] * y1)               / L[2,2]
     y3 = (b2 - L[3,1] * y1 - L[3,2] * y2) / L[3,3]
 
-    # Backward substitution: solve Lᵀ z = y
-    z3 = y3 / L[3,3]
-    z2 = (y2 - L[3,2] * z3) / L[2,2]
+    z3 = y3                               / L[3,3]
+    z2 = (y2 - L[3,2] * z3)               / L[2,2]
     z1 = (y1 - L[2,1] * z2 - L[3,1] * z3) / L[1,1]
 
-    # Unpermute from (3,1,2) back to (1,2,3): z1→slot3, z2→slot1, z3→slot2
     b[1] = z2
     b[2] = z3
     b[3] = z1
     return b
 end
 
-# Hessian + in-place Cholesky (legacy, uses naive order)
-function powbarr!(L::AbstractMatrix{T}, x::AbstractVector{T}, α::T) where {T}
-    powhess!(L, x, α)
-    chol3!(L)
-    return L
-end
-
+# compute the third-order directional derivative
 #
-# Third-order directional derivative F'''(x)[u]
+#   f'''(p)[u]
 #
-
-function powbarrhess!(D::AbstractMatrix{T}, x::AbstractVector{T}, u::AbstractVector{T}, α::T) where {T}
+# as a 3x3 matrix
+function powbarrthird!(D::AbstractMatrix, x::AbstractVector, u::AbstractVector, α)
     x1, x2, x3 = x[1], x[2], x[3]
     u1, u2, u3 = u[1], u[2], u[3]
-    a = 2 * α
-    b = 2 * (one(T) - α)
+
+    a = 2α
+    b = 2 - 2α
     p = x1^a * x2^b
-    φ = p - x3^2
+    φ = p - x3 * x3
 
-    # ℓ = (a/x₁, b/x₂, 0) = ∇log p
-    ℓ1 = a / x1
-    ℓ2 = b / x2
-    ℓ3 = zero(T)
+    l1 = a / x1
+    l2 = b / x2
+    m1 = u1 / x1
+    m2 = u2 / x2
 
-    # φ′ = (a*p/x₁, b*p/x₂, -2x₃)
-    φp1 = a * p / x1
-    φp2 = b * p / x2
-    φp3 = -2 * x3
+    φp1 = p * l1
+    φp2 = p * l2
+    φp3 = -2x3
 
-    # φ̇ = ⟨φ′, u⟩
     φdot = φp1 * u1 + φp2 * u2 + φp3 * u3
 
-    # Dℓ = -diag(a/x₁², b/x₂², 0)
-    Dℓ11 = -a / x1^2
-    Dℓ22 = -b / x2^2
+    φpp11 = p * l1 * (l1 - inv(x1))
+    φpp22 = p * l2 * (l2 - inv(x2))
+    φpp12 = p * l1 * l2
 
-    # φ″ = p(ℓℓᵀ + Dℓ) + diag(0,0,-2)
-    # φ″₁₁ = p(ℓ₁² + Dℓ₁₁) = p(ℓ₁² - a/x₁²)
-    # φ″₂₂ = p(ℓ₂² + Dℓ₂₂) = p(ℓ₂² - b/x₂²)
-    # φ″₁₂ = p ℓ₁ ℓ₂
-    # φ″₃₃ = -2
-    # φ″₁₃ = φ″₂₃ = 0
-
-    φpp11 = p * (ℓ1^2 + Dℓ11)
-    φpp22 = p * (ℓ2^2 + Dℓ22)
-    φpp12 = p * ℓ1 * ℓ2
-    φpp33 = -2 * one(T)
-
-    # φ̇′ = φ″ u
     φdotp1 = φpp11 * u1 + φpp12 * u2
     φdotp2 = φpp12 * u1 + φpp22 * u2
-    φdotp3 = φpp33 * u3
+    φdotp3 = -2u3
 
-    # Dℓu = Dℓ u
-    Dℓu1 = Dℓ11 * u1
-    Dℓu2 = Dℓ22 * u2
-    Dℓu3 = zero(T)
+    φ2 = φ * φ
+    φ3 = φ * φ * φ
 
-    # ⟨ℓ,u⟩
-    ℓu = ℓ1 * u1 + ℓ2 * u2
+    c2 =  φdot / φ2
+    c3 = 2φdot / φ3
 
-    # Ḋℓ = diag(2a u₁/x₁³, 2b u₂/x₂³, 0)
-    Ddotℓ11 = 2 * a * u1 / x1^3
-    Ddotℓ22 = 2 * b * u2 / x2^3
+    K  = p / φ * a * b * (a - 1) * (m2 - m1)
 
-    # φ‴[u] = p⟨ℓ,u⟩ (ℓℓᵀ + Dℓ) + p (Dℓu ℓᵀ + ℓ (Dℓu)ᵀ + Ḋℓ)
-    # φ‴[u]₁₁ = p ℓu (ℓ₁² + Dℓ₁₁) + p (2 Dℓu₁ ℓ₁ + Ḋℓ₁₁)
-    # φ‴[u]₂₂ = p ℓu (ℓ₂² + Dℓ₂₂) + p (2 Dℓu₂ ℓ₂ + Ḋℓ₂₂)
-    # φ‴[u]₁₂ = p ℓu ℓ₁ ℓ₂ + p (Dℓu₁ ℓ₂ + ℓ₁ Dℓu₂)
-    # φ‴[u]₃₃ = 0, φ‴[u]₁₃ = φ‴[u]₂₃ = 0
+    D[1,1] = 2φdotp1 * φp1                 / φ2 - c3 * φp1 * φp1 - K / (x1 * x1) +  c2 * φpp11 - b * m1 / (x1 * x1)
+    D[2,2] = 2φdotp2 * φp2                 / φ2 - c3 * φp2 * φp2 - K / (x2 * x2) +  c2 * φpp22 - a * m2 / (x2 * x2)
+    D[2,1] = (φdotp2 * φp1 + φp2 * φdotp1) / φ2 - c3 * φp2 * φp1 + K / (x1 * x2) +  c2 * φpp12
+    D[3,3] = 2φdotp3 * φp3                 / φ2 - c3 * φp3 * φp3                 - 2c2
+    D[3,1] = (φdotp3 * φp1 + φp3 * φdotp1) / φ2 - c3 * φp3 * φp1
+    D[3,2] = (φdotp3 * φp2 + φp3 * φdotp2) / φ2 - c3 * φp3 * φp2
 
-    φ3u11 = p * ℓu * (ℓ1^2 + Dℓ11) + p * (2 * Dℓu1 * ℓ1 + Ddotℓ11)
-    φ3u22 = p * ℓu * (ℓ2^2 + Dℓ22) + p * (2 * Dℓu2 * ℓ2 + Ddotℓ22)
-    φ3u12 = p * ℓu * ℓ1 * ℓ2 + p * (Dℓu1 * ℓ2 + ℓ1 * Dℓu2)
-
-    # ḣ″ = diag(-2(1-α)u₁/x₁³, -2α u₂/x₂³, 0)
-    hdot11 = -2 * (one(T) - α) * u1 / x1^3
-    hdot22 = -2 * α * u2 / x2^3
-
-    φ2 = φ^2
-    φ3 = φ^3
-
-    # F‴(x)[u] = (φ̇′ φ′ᵀ + φ′ φ̇′ᵀ)/φ²
-    #          - (2 φ̇/φ³) φ′ φ′ᵀ
-    #          - φ‴[u]/φ
-    #          + (φ̇/φ²) φ″
-    #          + ḣ″
-
-    # Compute each entry
-    for j in 1:3, i in j:3
-        φpi = (φp1, φp2, φp3)[i]
-        φpj = (φp1, φp2, φp3)[j]
-        φdotpi = (φdotp1, φdotp2, φdotp3)[i]
-        φdotpj = (φdotp1, φdotp2, φdotp3)[j]
-
-        # Term 1: (φ̇′ φ′ᵀ + φ′ φ̇′ᵀ)/φ²
-        term1 = (φdotpi * φpj + φpi * φdotpj) / φ2
-
-        # Term 2: -(2 φ̇/φ³) φ′ φ′ᵀ
-        term2 = -2 * φdot / φ3 * φpi * φpj
-
-        # Term 3: -φ‴[u]/φ (only has 1,1 and 2,2 and 1,2 entries)
-        φ3uij = zero(T)
-        if i == 1 && j == 1
-            φ3uij = φ3u11
-        elseif i == 2 && j == 2
-            φ3uij = φ3u22
-        elseif (i == 1 && j == 2) || (i == 2 && j == 1)
-            φ3uij = φ3u12
-        end
-        term3 = -φ3uij / φ
-
-        # Term 4: (φ̇/φ²) φ″
-        φppij = zero(T)
-        if i == 1 && j == 1
-            φppij = φpp11
-        elseif i == 2 && j == 2
-            φppij = φpp22
-        elseif (i == 1 && j == 2) || (i == 2 && j == 1)
-            φppij = φpp12
-        elseif i == 3 && j == 3
-            φppij = φpp33
-        end
-        term4 = φdot / φ2 * φppij
-
-        # Term 5: ḣ″
-        hdotij = zero(T)
-        if i == 1 && j == 1
-            hdotij = hdot11
-        elseif i == 2 && j == 2
-            hdotij = hdot22
-        end
-
-        D[i,j] = term1 + term2 + term3 + term4 + hdotij
-    end
-
-    # Symmetrize
     D[1,2] = D[2,1]
     D[1,3] = D[3,1]
     D[2,3] = D[3,2]
@@ -352,83 +276,76 @@ function powbarrhess!(D::AbstractMatrix{T}, x::AbstractVector{T}, u::AbstractVec
     return D
 end
 
-#
-# Cone membership predicates
-#
-
+# Determine if x is in the power cone.
 function powincone(x::AbstractVector{T}, α::T) where {T}
     x[1] > 0 && x[2] > 0 && powphi(x, α) > 0
 end
 
+# Determine if s is in the dual power cone.
 function powindual(s::AbstractVector{T}, α::T) where {T}
     s[1] > 0 && s[2] > 0 && (s[1] / α)^α * (s[2] / (one(T) - α))^(one(T) - α) > abs(s[3])
 end
 
+# compute the primal "shadow" iterate x*, solving
 #
-# Shadow primal computation (1D scalar solve for ρ)
+#   -f'(p*) = d,
 #
-# Find x̃ such that F'(x̃) = -s by solving for ρ ∈ [1, ∞):
-#   X₁(ρ) = (2αρ + 1-α)/s₁
-#   X₂(ρ) = (2(1-α)ρ + α)/s₂
-#   g(ρ) = ρ(ρ-1) - (s₃²/4) X₁(ρ)^(2α) X₂(ρ)^(2(1-α)) = 0
+# using a 1-D scalar root-find on the function
 #
-# Uses safeguarded Newton with bracket fallback.
-# Warm-started from ρ_seed (previous ρ, scale-invariant).
-# Shortcuts: s₃=0 ⟹ ρ*=1; α=1/2 ⟹ quadratic closed form.
+#   g(ρ) = ρ(ρ - 1) - ¼ d₃² ((aρ + ½b) / d₁)ᵃ ((bρ + ½a) / d₂)ᵇ  
 #
-
-function powdualgrad!(xs::AbstractVector{T}, ρ_seed::T, s::AbstractVector{T}, α::T) where {T}
+# with
+#
+#   a = 2α
+#   b = 2 - 2α
+#
+# and
+#
+#   p₁* = ((aρ + ½b) / d₁)
+#   p₂* = ((bρ + ½a) / d₂)
+#   p₃* = -d₃ / 2ρ (p₁*)ᵃ (p₂*)ᵇ
+#
+function powdualgrad!(xs::AbstractVector{T}, seed::T, s::AbstractVector{T}, α::T) where {T}
     s1, s2, s3 = s[1], s[2], s[3]
-    a = 2 * α
-    b = 2 * (one(T) - α)
 
-    # Shortcut 1: s₃ = 0 ⟹ ρ* = 1 (symmetric slice)
-    ρ = if iszero(s3)
-        one(T)
-    # Shortcut 2: α = 1/2 ⟹ quadratic closed form
-    elseif α == one(T) / 2
-        k = s3^2 / (4 * s1 * s2)
-        ((one(T) + k) + sqrt(one(T) + 3k)) / (2 * (one(T) - k))
-    else
-        # General case: safeguarded Newton
-        k = s3^2 / 4
+    a =     2α
+    b = 2 - 2α
 
-        X1(ρ) = (a * ρ + one(T) - α) / s1
-        X2(ρ) = (b * ρ + α) / s2
-
-        g(ρ)  = ρ * (ρ - one(T)) - k * X1(ρ)^a * X2(ρ)^b
-        gp(ρ) = (2ρ - one(T)) - k * X1(ρ)^a * X2(ρ)^b *
-                (a^2 / (a * ρ + one(T) - α) + b^2 / (b * ρ + α))
-
-        seed = ρ_seed
-
-        # Build bracket: lo=1 (g(1)≤0 always), grow hi until g(hi)>0
-        lo = one(T)
-        hi = max(2 * seed, 2 * one(T))
-        while g(hi) ≤ 0
-            hi *= 2
-        end
-
-        rtsafe(g, gp, lo, hi, seed)
+    function g(ρ)
+        return ρ * (ρ - 1) - s3^2 / 4 * ((a * ρ + 1 - α) / s1)^a * ((b * ρ + α) / s2)^b
     end
 
-    # Recover x̃ from ρ
-    X1 = (a * ρ + one(T) - α) / s1
-    X2 = (b * ρ + α) / s2
-    p = X1^a * X2^b
-    φ = p / ρ
+    function gp(ρ)
+        return (2ρ - 1) - s3^2 / 4 * ((a * ρ + 1 - α) / s1)^a * ((b * ρ + α) / s2)^b * (a^2 / (a * ρ + 1 - α) + b^2 / (b * ρ + α))
+    end
 
-    xs[1] = X1
-    xs[2] = X2
-    xs[3] = -s3 * φ / 2
+    hi = 2max(seed, 1)
+
+    while g(hi) ≤ 0
+        hi *= 2
+    end
+
+    ρ = rtsafe(g, gp, one(T), hi, seed)
+
+    xs[1] = x1 = (a * ρ + 1 - α) / s1
+    xs[2] = x2 = (b * ρ +     α) / s2
+    xs[3] = -s3 * (x1^a * x2^b / ρ) / 2
 
     return ρ
 end
 
+# Compute the coefficient t in the rank-1 term
+# t z zᵀ of the Tuncel scaling matrix M:
 #
-# BFGS t computation (same structure as ExpCone)
+#   M = ⟨x, s⟩⁻¹   s  sᵀ
+#     + ⟨δx,δs⟩⁻¹ δs δsᵀ
+#     + t          z  zᵀ,
 #
-
+# where
+#
+#   δx = x - μ x*
+#   δs = s - μ s*
+#
 function powbfgs(
         H::AbstractMatrix{T},
         xs::AbstractVector{T},
@@ -438,33 +355,74 @@ function powbfgs(
         μv::T,
         μt::T
     ) where {T}
-    # Workspaces
+    t = zero(T)
+
     w  = zeros(T, 3)
     Hw = zeros(T, 3)
     Hz = zeros(T, 3)
-
-    # Gap direction w = x̃ − μ̃x
+    #
+    # compute the gap direction
+    #
+    #   w = p* - μ* p
+    #
+    # where is the dual centrality parameter
+    #
+    #   μ* = ⟨p*, d*⟩ / ν.
+    #
     copy3!(w, xs)
     axpy3!(-μt, x, w)
-
-    # Hw = F'' w, Hz = F'' z
+    #
+    # compute the norm
+    #
+    #   ⟨w, f''(p) w⟩ = ‖Rᵀ w‖²
+    #
     mul3!(Hw, H, w)
-    mul3!(Hz, H, z)
-
     d = dot3(w, Hw)
-    d ≤ zero(T) && return zero(T)
 
-    fppzz = dot3(z, Hz)   # zᵀF''z
-    sz = dot3(ss, z)      # s̃ᵀz
-    pz = dot3(Hw, z)      # (F''w)ᵀz
+    if d > 0
+        #
+        # compute the norm
+        #
+        #   ⟨z, f''(p) z⟩ = ‖Rᵀ z‖²
+        #
+        mul3!(Hz, H, z)
+        fppzz = dot3(z, Hz)
+        #
+        # compute the dot product
+        #
+        #   ⟨d*, z⟩
+        #
+        sz = dot3(ss, z)
+        #
+        # compute the dot product
+        #
+        #   ⟨w, f''(p) z⟩ = ⟨Rᵀ w, Rᵀ z⟩
+        #
+        pz = dot3(Hw, z)
+        #
+        # compute t:
+        #
+        #   t = μ ⟨z, f''(p) z⟩
+        #     - μ ⟨d*,       z⟩² / ν
+        #     - μ ⟨w, f''(p) z⟩² / ⟨w, f''(p) w⟩
+        #
+        t = μv * (fppzz - sz^2 / 3 - pz^2 / d)
+    end
 
-    return μv * (fppzz - sz^2 / 3 - pz^2 / d)
+    return t
 end
 
+# Assemble the Tuncel scaling matrix
 #
-# Scale computation
+#   M = ⟨x, s⟩⁻¹   s  sᵀ
+#     + ⟨δx,δs⟩⁻¹ δs δsᵀ
+#     + t          z  zᵀ,
 #
-
+# where
+#
+#   δx = x - μ x*
+#   δs = s - μ s*
+#
 function powscale!(
         H::AbstractMatrix{T},
         R::AbstractMatrix{T},
@@ -475,66 +433,113 @@ function powscale!(
         α::T
     ) where {T}
 
-    # Workspace
     xs = zeros(T, 3)
     z  = zeros(T, 3)
     δx = zeros(T, 3)
     δs = zeros(T, 3)
-
-    # Stage 1: Hessian F''(x) into R, shadow dual s̃ = -F'(x)
-    powhess!(R, x, α)
+    #
+    # compute the Hessian
+    #
+    #   f''(p)
+    #
+    powbarrhess!(R, x, α)
+    #
+    # compute the "shadow" dual
+    #
+    #   d* = -f'(p)
+    #
     powbarrgrad!(ss, x, α)
-    lmul!(-1, ss)
-
-    # Stage 2: Shadow primal x̃ (warm-started 1-D solve)
+    lmul3!(-1, ss)
+    #
+    # compute the "shadow" primal, solving
+    #
+    #   d = -f'(p*)
+    #
     ρ_new = powdualgrad!(xs, ρ_seed, s, α)
-
-    # Block-local μ and μ̃
-    μv = dot3(x, s) / 3
+    #
+    # compute the centrality parameters
+    #
+    #   μ  = ⟨p,  d ⟩ / ν
+    #   μ* = ⟨p*, d*⟩ / ν
+    #
+    μv = dot3(x, s)   / 3
     μt = dot3(xs, ss) / 3
-
-    # Stage 3: Orthogonal completion z = x × x̃
+    #
+    # compute the cross-product
+    #
+    #   z = p × p*
+    #
     cross3!(z, x, xs)
+    #
+    # compute the sine of the angle θ between p and p*:
+    #
+    #   ‖p × p*‖ / (‖p‖ ‖p*‖) = sin(θ)
+    #
+    # when this quantity is small, the iterate is close to
+    # the central path and the term δd δdᵀ / ⟨δp, δd⟩ term in M
+    # becomes innaccurate due to cancellation in the difference
+    #
+    #   δx = p - μ p*
+    #
+    # in this case, we fall back to the approximation
+    #
+    #   M ≈ μ f''(p)
+    #
     nz = norm3(z)
-
-    # Centrality check
     nx = norm3(x)
     nxs = norm3(xs)
-    rel_z = nz / (nx * nxs + eps(T))
 
-    if rel_z < eps(T)
-        # On or near central path: H = μ F''(x)
+    if nz < eps(T) * (nx * nxs + eps(T))
+        #
+        # approximate M by
+        #
+        #    M ≈ μ f''(p)
+        #
         copyto!(H, R)
         lmul3!(μv, H)
     else
-        # Normalize z
+        #
+        # normalize z:
+        #
+        #   z = z / ‖z‖
+        #
         ldiv3!(nz, z)
-
-        # BFGS t (uses R for matvecs, R still holds Hessian)
+        #
+        # compute the coefficent t in the rank-1 term
+        #
+        #   tzzᵀ
+        #
         t = powbfgs(R, xs, ss, z, x, μv, μt)
 
-        if !(t > 0) || !isfinite(t)
-            # Fallback to μF''
+        if t ≤ 0 || !isfinite(t)
+            #   
+            # approximate M by
+            #
+            #    M ≈ μ f''(p)
+            #
             copyto!(H, R)
             lmul3!(μv, H)
         else
-            # H = ssᵀ/⟨x,s⟩ + δsδsᵀ/⟨δx,δs⟩ + tzzᵀ
-            xs_dot = 3 * μv
-
+            #
+            # construct M:
+            #
+            #   M = ⟨p, d⟩⁻¹   d  dᵀ
+            #     + ⟨δp,δd⟩⁻¹ δd δdᵀ
+            #     + t          z  zᵀ,
+            #
             copy3!(δx, x);  axpy3!(-μv, xs, δx)
             copy3!(δs, s);  axpy3!(-μv, ss, δs)
 
+            xs_dot = 3μv
             δ_dot = dot3(δx, δs)
 
-            ger3!(H, s, s, inv(xs_dot), 0)
-            ger3!(H, δs, δs, inv(δ_dot), 1)
-            ger3!(H, z, z, t, 1)
+            ger3!(H,  s,  s, inv(xs_dot), 0)
+            ger3!(H, δs, δs, inv(δ_dot),  1)
+            ger3!(H,  z,  z, t,           1)
         end
     end
 
-    # Structured Cholesky into R for corrector solve (pivot order 3,1,2)
     powchol3!(R, R, x, α)
-
     return ρ_new
 end
 
@@ -543,10 +548,14 @@ function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}
     return H
 end
 
+# Compute the Mehrotra corrector term
 #
-# Corrector
+#   -d - σμ f'(p) - η,
 #
-
+# where η is the third-order correction
+#
+#   η = -½ f'''(p)[Δp, f''(p)⁻¹ Δd].
+#
 function powcorr!(
         r::AbstractVector{T},
         R::AbstractMatrix{T},
@@ -562,16 +571,29 @@ function powcorr!(
     v  = zeros(T, 3)
     η  = zeros(T, 3)
     D  = zeros(T, 3, 3)
-
-    # v = F''(p)⁻¹Δd via structured Cholesky factor (stored in R, permuted 3,1,2)
+    #
+    # solve for v in
+    #
+    #   f''(p) v = Δd
+    #
+    # using the structured Cholesky factor stored in R
+    #
     copy3!(v, Δd)
     powldiv3!(R, v)
-
-    # η = -½ F'''(p)[Δp, v]
-    powbarrhess!(D, p, Δp, α)
+    #
+    # compute the third-order correction
+    #
+    #   η = -½ f'''(p)[Δp, v]
+    #
+    powbarrthird!(D, p, Δp, α)
     mul3!(η, D, v, -0.5, 0)
-
-    # r = -d - σμ·F'(p) - η = -d + σμ·ss - η (since ss = -F'(p))
+    #
+    # compute the Mehrotra corrector term
+    #
+    #   -d - σμ f'(p) - η,
+    #
+    # using s* = -f'(p):  -d + σμ s* - η
+    #
     copy3!(r, d)
     axpby3!(σμ, ss, -1, r)
     axpy3!(-1, η, r)
@@ -591,10 +613,12 @@ function corr!(
     return powcorr!(r, cache.R, cache.ss, p, d, Δp, Δd, σμ, cache.cone.α)
 end
 
+# use bisection to find the largest number 0 < τ ≤ 1
+# such that
 #
-# Max step by bisection on cone membership
+#   x + τ Δx
 #
-
+# is in the power cone (or its dual).
 function powmaxstep(incone, x::AbstractVector{T}, Δx::AbstractVector{T}, α::T) where {T}
     w = zeros(T, 3)
 

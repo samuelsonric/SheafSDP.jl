@@ -136,7 +136,7 @@ end
 #   f'''(x)[u]
 #
 # as a 3x3 matrix.
-function expbarrhess!(D::AbstractMatrix{T}, x::AbstractVector{T}, u::AbstractVector{T}) where {T}
+function expbarrthird!(D::AbstractMatrix{T}, x::AbstractVector{T}, u::AbstractVector{T}) where {T}
     ψ = exppsi(x)
 
     x1, x2     = x[1], x[2]
@@ -492,7 +492,7 @@ function expcorr!(
     #
     #   η = -½ f'''(p)[Δp, v]
     #
-    expbarrhess!(D, p, Δp)
+    expbarrthird!(D, p, Δp)
     mul3!(η, D, v, -0.5, 0)
     #
     # compute the Mehrotra corrector term
