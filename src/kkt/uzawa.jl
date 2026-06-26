@@ -97,9 +97,10 @@ function solve_kkt!(
     A::BlockSparseMatrix{T},
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
-    g::AbstractVector{T}
+    g::AbstractVector{T},
+    y0 = nothing
 ) where {UPLO, T}
-    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, set.rtol, set.itmax)
+    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, set.rtol, set.itmax, y0)
 end
 
 #
@@ -121,7 +122,8 @@ function solve_uzw!(
         α::T,
         atol::T,
         rtol::T,
-        itmax::Int
+        itmax::Int,
+        y0 = nothing
     ) where {UPLO, T}
     m, n = size(B)
 
@@ -174,7 +176,7 @@ function solve_uzw!(
     #
     #   S y = r
     #
-    it!(itrwrk, S, r; α, atol, rtol, itmax)
+    it!(itrwrk, S, r, y0; α, atol, rtol, itmax)
 
     copyto!(y, solution(itrwrk))
     #

@@ -133,9 +133,9 @@ function scale!(H::BlockSparseMatrix{T}, caches::Caches{T},
     return
 end
 
-function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q, sp, sy, dp, dy;
+function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q, sp, sy, dp, dy, y0 = nothing;
                  refine::Bool=false, refine_itmax::Int=10, refine_atol=1e-12, refine_rtol=1e-13)
-    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp)
+    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0)
 
     if refine
         kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy;
@@ -448,7 +448,8 @@ function step!(s::IPMSolver{T}) where {T}
     #
     corrector!(s.f, s.caches, s.cones, s.p, s.d, s.Δpa, s.Δda, σ * μ, s.B)
     axpy!(-1, s.rd, s.f)
-    kkt_iters_corr = newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q, s.sp, s.sy, s.dp, s.dy;
+    lmul!(-1, s.Δya)
+    kkt_iters_corr = newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q, s.sp, s.sy, s.dp, s.dy, s.Δya;
                              refine=do_refine, refine_itmax=s.settings.refine_itmax,
                              refine_atol=s.settings.refine_atol, refine_rtol=s.settings.refine_rtol)
     kkt_iters = kkt_iters_aff + kkt_iters_corr

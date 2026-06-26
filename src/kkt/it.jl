@@ -19,28 +19,8 @@ const IterationWorkspace{T} = Union{RiWorkspace{T}, CgWorkspace{T}, CrWorkspace{
 function ri!(
         workspace::RiWorkspace{T},
         S,
-        b::AbstractVector{T};
-        M=I,
-        ldiv::Bool=true,
-        α::Real=1.0,
-        atol::Real=√eps(T),
-        rtol::Real=√eps(T),
-        itmax::Integer=1000,
-    ) where {T}
-    fill!(workspace.x, 0)
-
-    if ldiv
-        return ri_impl!(workspace, S, b, M, Val(true); α, atol, rtol, itmax)
-    else
-        return ri_impl!(workspace, S, b, M, Val(false); α, atol, rtol, itmax)
-    end
-end
-
-function ri!(
-        workspace::RiWorkspace{T},
-        S,
         b::AbstractVector{T},
-        x0::AbstractVector{T};
+        x0 = nothing;
         M=I,
         ldiv::Bool=true,
         α::Real=1.0,
@@ -48,7 +28,11 @@ function ri!(
         rtol::Real=√eps(T),
         itmax::Integer=1000,
     ) where {T}
-    copyto!(workspace.x, x0)
+    if isnothing(x0)
+        fill!(workspace.x, 0)
+    else
+        copyto!(workspace.x, x0)
+    end
 
     if ldiv
         return ri_impl!(workspace, S, b, M, Val(true); α, atol, rtol, itmax)
@@ -114,25 +98,21 @@ function ri_impl!(
     return workspace
 end
 
-function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}; M=I, ldiv::Bool=true, α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
-    if itrwrk isa RiWorkspace
-        ri!(itrwrk, S, b; M, ldiv, α, atol, rtol, itmax)
-    elseif itrwrk isa CgWorkspace
-        cg!(itrwrk, S, b; M, ldiv, atol, rtol, itmax)
-    else
-        cr!(itrwrk, S, b; M, ldiv, atol, rtol, itmax)
-    end
-
-    return itrwrk
-end
-
-function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}, x0::AbstractVector{T}; M=I, ldiv::Bool=true, α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
+function it!(itrwrk::IterationWorkspace{T}, S, b::AbstractVector{T}, x0 = nothing; M=I, ldiv::Bool=true, α::Real=1.0, atol::Real=√eps(T), rtol::Real=√eps(T), itmax::Integer=1000) where {T}
     if itrwrk isa RiWorkspace
         ri!(itrwrk, S, b, x0; M, ldiv, α, atol, rtol, itmax)
     elseif itrwrk isa CgWorkspace
-        cg!(itrwrk, S, b, x0; M, ldiv, atol, rtol, itmax)
+        if isnothing(x0)
+            cg!(itrwrk, S, b; M, ldiv, atol, rtol, itmax)
+        else
+            cg!(itrwrk, S, b, x0; M, ldiv, atol, rtol, itmax)
+        end
     else
-        cr!(itrwrk, S, b, x0; M, ldiv, atol, rtol, itmax)
+        if isnothing(x0)
+            cr!(itrwrk, S, b; M, ldiv, atol, rtol, itmax)
+        else
+            cr!(itrwrk, S, b, x0; M, ldiv, atol, rtol, itmax)
+        end
     end
 
     return itrwrk
