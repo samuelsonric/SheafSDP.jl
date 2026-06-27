@@ -141,21 +141,21 @@ function run_benchmark(; raug=1e7, scale=1, x_max=100.0)
         fill!(Q, 0)
 
         # Cones
-        cones = Vector{Cone}(undef, 3*N)
+        cones = Vector{AbstractCone}(undef, 3*N)
         for i in 1:N
             cones[col_ζ(i)] = SheafSDP.SecondOrderCone()
             cones[col_sp(i)] = SheafSDP.PositiveCone()
             cones[col_sm(i)] = SheafSDP.PositiveCone()
         end
 
-        prob = IPMProblem(c_vec, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c_vec, g, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-8, gap_tol=1e-8, itmax=200
         )
         result = solve(prob, settings)
 
-        return dot(c_vec, result.p), result.iterations, result.kkt_iters, result.status
+        return dot(c_vec, result.p), result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

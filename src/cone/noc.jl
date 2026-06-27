@@ -1,10 +1,10 @@
 """
-    CofreeCone <: Cone
+    CofreeCone <: AbstractCone
 
 The cone of all n-dimensional Euclidean
 vectors.
 """
-struct CofreeCone <: Cone end
+struct CofreeCone <: AbstractCone end
 
 struct CofreeConeCache <: AbstractCache{CofreeCone}
     cone::CofreeCone
@@ -14,15 +14,19 @@ function CofreeConeCache()
     return CofreeConeCache(CofreeCone())
 end
 
-function degree(::CofreeCone, n::Int)
+#
+# AbstractCone Interface
+#
+
+function degree(::CofreeCone, n::Integer)
     return 0
 end
 
-function cachesize(::CofreeCone, n::Int)
+function cachesize(::CofreeCone, n::Integer)
     return 0
 end
 
-function cache(::Caches, ::Int, c::CofreeCone)
+function cache(::Caches, ::Integer, c::CofreeCone)
     return CofreeConeCache(c)
 end
 
@@ -31,7 +35,7 @@ function identity!(x::AbstractVector{T}, ::CofreeCone) where {T}
     return x
 end
 
-function scale!(H::AbstractMatrix{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::CofreeConeCache) where {T}
+function scale!(H::AbstractMatrix{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::CofreeConeCache, ::ConeWorkspace) where {T}
     fill!(H, zero(T))
     return H
 end
@@ -43,12 +47,13 @@ function corr!(
         ::AbstractVector{T},
         ::AbstractVector{T},
         ::Real,
-        ::CofreeConeCache
+        ::CofreeConeCache,
+        ::ConeWorkspace,
     ) where {T}
     fill!(r, zero(T))
     return r
 end
 
-function maxsteps(::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::CofreeConeCache) where {T}
+function maxsteps(::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::AbstractVector{T}, ::CofreeConeCache, ::ConeWorkspace) where {T}
     return one(T), one(T)
 end

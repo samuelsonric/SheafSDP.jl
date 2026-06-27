@@ -1,10 +1,21 @@
 """
-    SemidefiniteCone <: Cone
+    SemidefiniteCone <: AbstractCone
 
 A cone of n × n positive-semidefinite
 matrices.
 """
-struct SemidefiniteCone <: Cone end
+struct SemidefiniteCone <: AbstractCone end
+
+# SDP workspace layout in data:
+#   M1: n×n at offset 0
+#   M2: n×n at offset n²
+#   M3: n×n at offset 2n²
+#   M4: n×n at offset 3n²
+# Total: 4n²
+function workspacesize(::SemidefiniteCone, n::Integer)
+    d = triroot(n)
+    return 4 * d^2
+end
 
 struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
     cone::SemidefiniteCone
@@ -26,14 +37,14 @@ struct SemidefiniteConeCache{T} <: AbstractCache{SemidefiniteCone}
     # the orthogonal factor U in the singular
     # value decomposition
     #
-    #   LPᵀ LD = U Σ Vᵀ   
+    #   LPᵀ LD = U Σ Vᵀ
     #
     U::FMatrixView{T}
     #
     # the diagonal factor Σ in the singular
     # value decomposition
     #
-    #   LPᵀ LD = U Σ Vᵀ   
+    #   LPᵀ LD = U Σ Vᵀ
     #
     s::FVectorView{T}
 end
@@ -131,46 +142,6 @@ function skron!(H::AbstractMatrix{T}, A::AbstractMatrix{T}) where {T}
     return H
 end
 
-function degree(::SemidefiniteCone, n::Int)
-    return triroot(n)
-end
-
-function cachesize(::SemidefiniteCone, n::Int)
-    d = triroot(n)
-    return 3d^2 + d
-end
-
-function cache(c::Caches{T}, i::Integer, cone::SemidefiniteCone) where T
-    n = c.xcol[i + 1] - c.xcol[i]
-    d = triroot(n)
-
-    data = cachedata(c, i)
-
-    LP = reshape(view(data, 0d^2 + 1:1d^2    ), d, d)
-    LD = reshape(view(data, 1d^2 + 1:2d^2    ), d, d)
-    U  = reshape(view(data, 2d^2 + 1:3d^2    ), d, d)
-    s  =         view(data, 3d^2 + 1:3d^2 + d)
-
-    SemidefiniteConeCache(cone, LP, LD, U, s)
-end
-
-# construct the identity matrix
-#
-#   I
-#
-function identity!(x::AbstractVector{T}, ::SemidefiniteCone) where {T}
-    d = triroot(length(x))
-    k = 1
-
-    fill!(x, zero(T))
-
-    for j in 1:d
-        x[k] = one(T); k += d - j + 1
-    end
-
-    return x
-end
-
 # compute the symmetric Kronecker product
 #
 #   H = W⁻¹ ⊗ W⁻¹
@@ -179,7 +150,7 @@ end
 #
 #   W = √P √(√P D √P)⁻¹ √P
 #     = √D √(√D P √D)⁻¹ √D
-# 
+#
 function sdpscale!(
         H::AbstractMatrix{T},
         LP::AbstractMatrix{T},
@@ -187,14 +158,16 @@ function sdpscale!(
         U::AbstractMatrix{T},
         s::AbstractVector{T},
         p::AbstractVector,
-        d::AbstractVector
+        d::AbstractVector,
+        wrk::ConeWorkspace{T},
     ) where {T}
-    n = size(LP, 1)
+    n = size(LP, 1); m = n * n
 
-    V = zeros(T, n, n)
-    W = zeros(T, n, n)
-    work = zeros(T, 1)
-    iwork = zeros(BlasInt, 8n)
+    V = reshape(view(wrk.data, 0m + 1:1m), n, n)
+    W = reshape(view(wrk.data, 1m + 1:2m), n, n)
+
+    work  = wrk.work
+    iwork = wrk.iwork
 
     smat!(LP, p)
     smat!(LD, d)
@@ -238,10 +211,6 @@ function sdpscale!(
     return
 end
 
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SemidefiniteConeCache{T}) where {T}
-    return sdpscale!(H, cache.LP, cache.LD, cache.U, cache.s, p, d)
-end
-
 # Compute the corrector term
 #
 #   σμ Σ⁻¹ - Σ - 𝓛⁻¹(X)
@@ -266,29 +235,31 @@ function sdpcorr!(
         s::AbstractVector{T},
         Δp::AbstractVector{T},
         Δd::AbstractVector{T},
-        σμ::Real
+        σμ::Real,
+        wrk::ConeWorkspace{T},
     ) where {T}
-    n = size(L, 1)
+    n = size(L, 1); m = n * n
 
-    ΔP = zeros(T, n, n)
-    ΔD = zeros(T, n, n)
-    W = zeros(T, n, n)
-    X = zeros(T, n, n)
+    ΔP = reshape(view(wrk.data, 0m + 1:1m), n, n)
+    ΔD = reshape(view(wrk.data, 1m + 1:2m), n, n)
+    W  = reshape(view(wrk.data, 2m + 1:3m), n, n)
+    X  = reshape(view(wrk.data, 3m + 1:4m), n, n)
 
     smat!(ΔP, Δp)
     smat!(ΔD, Δd)
+    symmetrize!(ΔD)
     #
     # compute the product
     #
     #   X = Uᵀ L⁻¹ ΔP ΔD L U
     #
-    mul!(W, Symmetric(ΔD, :L), LowerTriangular(L))
+    mul!(W, ΔD, LowerTriangular(L))
     mul!(X, Symmetric(ΔP, :L), W)
 
     ldiv!(LowerTriangular(L), X)
 
     mul!(W, U', X)
-    mul!(X, W, U)
+    mul!(X, W,  U)
     #
     # compute
     #
@@ -320,18 +291,6 @@ function sdpcorr!(
     return r
 end
 
-function corr!(
-        r::AbstractVector{T},
-        ::AbstractVector{T},
-        ::AbstractVector{T},
-        Δp::AbstractVector{T},
-        Δd::AbstractVector{T},
-        σμ::Real,
-        cache::SemidefiniteConeCache{T}
-    ) where {T}
-    return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ)
-end
-
 # Find the largest number 0 < τ ≤ 1 such that
 #
 #   L Lᵀ + τ ΔX = L (I + τ M) Lᵀ
@@ -346,13 +305,31 @@ end
 #   τ⁻¹ = max {1, -λ},
 #
 # where λ is the smallest eigenvalue of L⁻¹ ΔX L⁻ᵀ.
-function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}) where {T}
-    n = size(L, 1)
+# construct the identity matrix
+#
+#   I
+#
+function sdpid!(x::AbstractVector{T}) where {T}
+    d = triroot(length(x))
+    k = 1
 
-    M = zeros(T, n, n)
-    W = Vector{T}(undef, n)
-    work = zeros(T, 1)
-    iwork = zeros(BlasInt, 1)
+    fill!(x, zero(T))
+
+    for j in 1:d
+        x[k] = one(T); k += d - j + 1
+    end
+
+    return x
+end
+
+function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}, wrk::ConeWorkspace{T}) where {T}
+    n = size(L, 1); m = n * n
+
+    M = reshape(view(wrk.data,     1:m    ), n, n)
+    W =         view(wrk.data, m + 1:m + n)
+
+    work  = wrk.work
+    iwork = wrk.iwork
     #
     # compute the product
     #
@@ -370,8 +347,56 @@ function sdpmaxstep(L::LowerTriangular{T}, Δx::AbstractVector{T}) where {T}
     return inv(max(one(T), -λ))
 end
 
-function maxsteps(::AbstractVector{T}, Δp::AbstractVector{T}, ::AbstractVector{T}, Δd::AbstractVector{T}, cache::SemidefiniteConeCache{T}) where {T}
-    τp = sdpmaxstep(LowerTriangular(cache.LP), Δp)
-    τd = sdpmaxstep(LowerTriangular(cache.LD), Δd)
+#
+# AbstractCone Interface
+#
+
+function degree(::SemidefiniteCone, n::Integer)
+    return triroot(n)
+end
+
+function cachesize(::SemidefiniteCone, n::Integer)
+    d = triroot(n)
+    return 3d^2 + d
+end
+
+function cache(c::Caches, i::Integer, cone::SemidefiniteCone)
+    n = c.xcol[i + 1] - c.xcol[i]
+    d = triroot(n)
+
+    data = cachedata(c, i)
+
+    LP = reshape(view(data, 0d^2 + 1:1d^2    ), d, d)
+    LD = reshape(view(data, 1d^2 + 1:2d^2    ), d, d)
+    U  = reshape(view(data, 2d^2 + 1:3d^2    ), d, d)
+    s  =         view(data, 3d^2 + 1:3d^2 + d)
+
+    SemidefiniteConeCache(cone, LP, LD, U, s)
+end
+
+function identity!(x::AbstractVector, ::SemidefiniteCone)
+    return sdpid!(x)
+end
+
+function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SemidefiniteConeCache{T}, wrk::ConeWorkspace{T}) where {T}
+    return sdpscale!(H, cache.LP, cache.LD, cache.U, cache.s, p, d, wrk)
+end
+
+function corr!(
+        r::AbstractVector{T},
+        ::AbstractVector{T},
+        ::AbstractVector{T},
+        Δp::AbstractVector{T},
+        Δd::AbstractVector{T},
+        σμ::Real,
+        cache::SemidefiniteConeCache{T},
+        wrk::ConeWorkspace{T},
+    ) where {T}
+    return sdpcorr!(r, cache.LP, cache.U, cache.s, Δp, Δd, σμ, wrk)
+end
+
+function maxsteps(::AbstractVector{T}, Δp::AbstractVector{T}, ::AbstractVector{T}, Δd::AbstractVector{T}, cache::SemidefiniteConeCache{T}, wrk::ConeWorkspace{T}) where {T}
+    τp = sdpmaxstep(LowerTriangular(cache.LP), Δp, wrk)
+    τd = sdpmaxstep(LowerTriangular(cache.LD), Δd, wrk)
     return τp, τd
 end

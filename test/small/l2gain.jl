@@ -235,14 +235,14 @@ function build_l2gain_problem(N, n_i, m_i, p_i, d_e, edges)
     fill!(Q, zero(T))
 
     # Cones: P_i is SemidefiniteCone, S_i is SemidefiniteCone, μ is PositiveCone
-    cones = Vector{Cone}(undef, n_col_blocks)
+    cones = Vector{AbstractCone}(undef, n_col_blocks)
     for i in 1:N
         cones[col_P(i)] = SemidefiniteCone()
         cones[col_S(i)] = SemidefiniteCone()
     end
     cones[col_μ] = PositiveCone()
 
-    return IPMProblem(c_vec, g, B, Q, cones), systems, interface_maps
+    return IPMProblem(Q, B, c_vec, g, cones), systems, interface_maps
 end
 
 # Solve with Mosek for comparison (SISO only: m_i = p_i = 1)
@@ -339,7 +339,7 @@ function run_l2gain_test(N, n_i, m_i, p_i, d_e; warmup=false, raug=1e6)
         N=N, n_i=n_i, m_i=m_i, p_i=p_i, d_e=d_e,
         nvars=size(prob.B, 2), ncons=size(prob.B, 1),
         t_sheaf=t_sheaf*1000, t_mosek=t_mosek*1000,
-        iters=result.iterations, status=result.status,
+        iters=result.ipm_niter, status=result.status,
         γ_sheaf=γ_sheaf, γ_mosek=γ_mosek,
         γ_diff=abs(γ_sheaf - γ_mosek)
     )

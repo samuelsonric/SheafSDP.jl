@@ -288,13 +288,13 @@ function build_passivity_problem()
     fill!(Q, zero(T))
 
     # Cones: [G_i is SemidefiniteCone, S_i is SemidefiniteCone] per node
-    cones = Vector{Cone}(undef, n_col_blocks)
+    cones = Vector{AbstractCone}(undef, n_col_blocks)
     for i in 1:N
         cones[col_G(i)] = SemidefiniteCone()
         cones[col_S(i)] = SemidefiniteCone()
     end
 
-    return IPMProblem(c_vec, g, B, Q, cones), systems, interface_maps
+    return IPMProblem(Q, B, c_vec, g, cones), systems, interface_maps
 end
 
 # Solve with Mosek for comparison
@@ -388,7 +388,7 @@ function run_scaling_test(N, n_i, d_e; warmup=false)
         N=N, n_i=n_i, d_e=d_e,
         nvars=size(prob.B, 2), ncons=size(prob.B, 1),
         t_sheaf=t_sheaf*1000, t_mosek=t_mosek*1000,
-        iters=result.iterations, status=result.status,
+        iters=result.ipm_niter, status=result.status,
         obj_diff=abs(obj_sheaf - obj_mosek)
     )
 end
@@ -472,13 +472,13 @@ function build_passivity_problem_params(N, n_i, m_i, d_e, edges)
     Q = SheafSDP.allocblockdiag(B)
     fill!(Q, zero(T))
 
-    cones = Vector{Cone}(undef, n_col_blocks)
+    cones = Vector{AbstractCone}(undef, n_col_blocks)
     for i in 1:N
         cones[col_G(i)] = SemidefiniteCone()
         cones[col_S(i)] = SemidefiniteCone()
     end
 
-    return IPMProblem(c_vec, g, B, Q, cones), systems, interface_maps
+    return IPMProblem(Q, B, c_vec, g, cones), systems, interface_maps
 end
 
 # Run scaling study
@@ -530,7 +530,7 @@ function run_with_raug(N, n_i, d_e, raug)
     t = @elapsed result = solve(prob, settings)
     obj = dot(prob.c, result.p)
 
-    return (raug=raug, time=t*1000, iters=result.iterations, status=result.status, obj=obj)
+    return (raug=raug, time=t*1000, iters=result.ipm_niter, status=result.status, obj=obj)
 end
 
 @printf("\n%12s | %10s | %5s | %8s\n", "raug", "time", "iters", "status")

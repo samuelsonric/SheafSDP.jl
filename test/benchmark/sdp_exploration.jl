@@ -282,13 +282,13 @@ function build_passivity_problem(N, n_i, m_i, d_e, edges; seed=42)
     Q = SheafSDP.allocblockdiag(B_mat)
     fill!(Q, zero(T))
 
-    cones = Vector{Cone}(undef, 2N)
+    cones = Vector{AbstractCone}(undef, 2N)
     for i in 1:N
         cones[col_G(i)] = SheafSDP.SemidefiniteCone()
         cones[col_S(i)] = SheafSDP.SemidefiniteCone()
     end
 
-    return IPMProblem(c_vec, g_vec, B_mat, Q, cones), systems, interface_maps
+    return IPMProblem(Q, B_mat, c_vec, g_vec, cones), systems, interface_maps
 end
 
 #=============================================================================
@@ -442,7 +442,7 @@ function run_benchmark(config; warmup=false, raug_values=[1e4, 1e5, 1e6, 1e7, 1e
         nvars=size(prob.B, 2), ncons=size(prob.B, 1), nedges=length(edges),
         sv_G=svecdim(n_i), sv_S=svecdim(n_i+m_i),
         t_sheaf=t_sheaf*1000, t_mosek=t_mosek*1000,
-        best_raug=best_raug, iters=result.iterations, status=result.status,
+        best_raug=best_raug, iters=result.ipm_niter, status=result.status,
         speedup=t_mosek/t_sheaf, obj_diff=abs(obj_sheaf - obj_mosek)
     )
 end

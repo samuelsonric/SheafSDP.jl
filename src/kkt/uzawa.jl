@@ -104,10 +104,10 @@ function solve_kkt!(
 end
 
 #
-# solve the KKT system
+# Solve the KKT system
 #
-#   [ A Bᵀ ] [ x ] = [ f ]
-#   [ B 0  ] [ y ]   [ g ]
+#   [ A -Bᵀ ] [ x ] = [ f ]
+#   [ B  0  ] [ y ]   [ g ]
 #
 function solve_uzw!(
         divwrk::DivisionWorkspace{T},
@@ -145,10 +145,10 @@ function solve_uzw!(
     #
     # compute the residual
     #
-    #   r = B x - g
+    #   r = g - B x
     #
     copyto!(r, g)
-    mul!(r, B, x, 1, -1)
+    mul!(r, B, x, -1, 1)
 
     function schur!(u, b)
         #
@@ -182,27 +182,27 @@ function solve_uzw!(
     #
     # compute the dual correction
     #
-    #   r = y - α g
+    #   r = y + α g
     #
     copyto!(r, y)
-    axpy!(-α, g, r)
+    axpy!(α, g, r)
     #
     # solve for x:
     #
-    #   F Fᵀ x = f - Bᵀ r
+    #   F Fᵀ x = f + Bᵀ r
     #
     copyto!(x, f)
-    mul!(x, B', r, -1, 1)
+    mul!(x, B', r, 1, 1)
     ldiv!(divwrk, F, x)
     ldiv!(divwrk, F', x)
     #
     # update y:
     #
-    #   y = r - α B x
+    #   y = y + α (g - B x)
     #
     copyto!(r, g)
     mul!(r, B, x, -1, 1)
-    axpy!(-α, r, y)
+    axpy!(α, r, y)
 
     return niter(itrwrk)
 end

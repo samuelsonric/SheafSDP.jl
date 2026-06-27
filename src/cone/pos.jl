@@ -1,9 +1,9 @@
 """
-    PositiveCone <: Cone
+    PositiveCone <: AbstractCone
 
 An n-dimensional positive orthant.
 """
-struct PositiveCone <: Cone end
+struct PositiveCone <: AbstractCone end
 
 struct PositiveConeCache <: AbstractCache{PositiveCone}
     cone::PositiveCone
@@ -13,23 +13,11 @@ function PositiveConeCache()
     return PositiveConeCache(PositiveCone())
 end
 
-function degree(::PositiveCone, n::Int)
-    return n
-end
-
-function cachesize(::PositiveCone, n::Int)
-    return 0
-end
-
-function cache(::Caches, ::Int, c::PositiveCone)
-    return PositiveConeCache(c)
-end
-
 # construct the ones vector
 #
 #   e = (1, …, 1)
 #
-function identity!(x::AbstractVector, ::PositiveCone)
+function posid!(x::AbstractVector)
     fill!(x, true)
     return x
 end
@@ -44,7 +32,7 @@ end
 #
 # is the Nesterov-Todd scaling point.
 #
-function scale!(H::AbstractMatrix, p::AbstractVector, d::AbstractVector, ::PositiveConeCache)
+function posscale!(H::AbstractMatrix, p::AbstractVector, d::AbstractVector)
     fill!(H, false)
 
     for i in eachindex(p)
@@ -59,30 +47,18 @@ end
 #   rᵢ = (σμ - Δpᵢ Δdᵢ) / pᵢ - dᵢ.
 #
 function poscorr!(
-        r::AbstractVector{T},
-        p::AbstractVector{T},
-        d::AbstractVector{T},
-        Δp::AbstractVector{T},
-        Δd::AbstractVector{T},
+        r::AbstractVector,
+        p::AbstractVector,
+        d::AbstractVector,
+        Δp::AbstractVector,
+        Δd::AbstractVector,
         σμ::Real
-    ) where {T}
+    )
     for i in eachindex(r)
         r[i] = (σμ - Δp[i] * Δd[i]) / p[i] - d[i]
     end
 
     return r
-end
-
-function corr!(
-        r::AbstractVector{T},
-        p::AbstractVector{T},
-        d::AbstractVector{T},
-        Δp::AbstractVector{T},
-        Δd::AbstractVector{T},
-        σμ::Real,
-        ::PositiveConeCache
-    ) where {T}
-    return poscorr!(r, p, d, Δp, Δd, σμ)
 end
 
 # Find the largest number 0 < τ ≤ 1 such that
@@ -107,6 +83,43 @@ function posmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
     return τ
 end
 
-function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, ::PositiveConeCache) where {T}
+#
+# AbstractCone Interface
+#
+
+function degree(::PositiveCone, n::Integer)
+    return n
+end
+
+function cachesize(::PositiveCone, n::Integer)
+    return 0
+end
+
+function cache(::Caches, ::Integer, c::PositiveCone)
+    return PositiveConeCache(c)
+end
+
+function identity!(x::AbstractVector, ::PositiveCone)
+    return posid!(x)
+end
+
+function scale!(H::AbstractMatrix, p::AbstractVector, d::AbstractVector, ::PositiveConeCache, ::ConeWorkspace)
+    return posscale!(H, p, d)
+end
+
+function corr!(
+        r::AbstractVector,
+        p::AbstractVector,
+        d::AbstractVector,
+        Δp::AbstractVector,
+        Δd::AbstractVector,
+        σμ::Real,
+        ::PositiveConeCache,
+        ::ConeWorkspace,
+    )
+    return poscorr!(r, p, d, Δp, Δd, σμ)
+end
+
+function maxsteps(p::AbstractVector, Δp::AbstractVector, d::AbstractVector, Δd::AbstractVector, ::PositiveConeCache, ::ConeWorkspace)
     return posmaxstep(p, Δp), posmaxstep(d, Δd)
 end

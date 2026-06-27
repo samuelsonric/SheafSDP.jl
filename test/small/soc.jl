@@ -164,7 +164,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
 
         # Cones
         nv = N * blocks_per_agent
-        cones = Vector{SheafSDP.Cone}(undef, nv)
+        cones = Vector{SheafSDP.AbstractCone}(undef, nv)
         for i in 1:N
             for t in 1:T
                 cones[col_x(i, t)] = SheafSDP.CofreeCone()
@@ -176,7 +176,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
             end
         end
 
-        prob = IPMProblem(c, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c, g, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-8, gap_tol=1e-8, itmax=200,
@@ -184,7 +184,7 @@ function run_benchmark(N, T; raug=100.0, ū=100.0)
         )
         result = solve(prob, settings)
 
-        return dot(c, result.p), result.iterations, result.kkt_iters, result.status
+        return dot(c, result.p), result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

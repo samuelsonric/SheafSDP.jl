@@ -1,11 +1,11 @@
 """
-    SecondOrderCone <: Cone
+    SecondOrderCone <: AbstractCone
 
 The n + 1-dimensional second-order cone,
 consisting of all pairs (x, y) such that
 y ≥ ‖x‖.
 """
-struct SecondOrderCone <: Cone end
+struct SecondOrderCone <: AbstractCone end
 
 struct SecondOrderConeCache{T} <: AbstractCache{SecondOrderCone}
     cone::SecondOrderCone
@@ -15,41 +15,16 @@ struct SecondOrderConeCache{T} <: AbstractCache{SecondOrderCone}
     #   β = √det(ω)
     #
     # of the deminant of the
-    # Nestorov-Todd scaling point.
+    # Nesterov-Todd scaling point.
     #
     β::FScalarView{T}
     #
-    # the normalized Nestorov-Todd scaling
+    # the normalized Nesterov-Todd scaling
     # point:
     #
     #   w = ω / β
     #
     w::FVectorView{T}
-end
-
-function degree(::SecondOrderCone, n::Int)
-    return 2
-end
-
-function cachesize(::SecondOrderCone, n::Int)
-    return 1 + n
-end
-
-function cache(c::Caches{T}, i::Int, cone::SecondOrderCone) where T
-    data = cachedata(c, i)
-    β = view(data, 1)
-    w = view(data, 2:length(data))
-    SecondOrderConeCache(cone, β, w)
-end
-
-# construct the identity element
-#
-#   e = (√2, 0, …, 0)
-#
-function identity!(x::AbstractVector{T}, ::SecondOrderCone) where {T}
-    fill!(x, zero(T))
-    x[1] = sqrt(T(2))
-    return x
 end
 
 # compute the J-inner product
@@ -166,7 +141,7 @@ function socroot!(x::AbstractVector{T}, w::AbstractVector{T}, β::T, flag::Bool)
     return x
 end
 
-# Compute the Nestorov-Todd scaling point
+# Compute the Nesterov-Todd scaling point
 # ω in factored form:
 #
 #   β = √det(ω)
@@ -227,11 +202,6 @@ function socscale!(
     return β
 end
 
-function scale!(H::AbstractMatrix{T}, p::AbstractVector{T}, d::AbstractVector{T}, cache::SecondOrderConeCache{T}) where {T}
-    cache.β[] = socscale!(H, cache.w, p, d)
-    return H
-end
-
 function soccorr!(
         r::AbstractVector{T},
         w::AbstractVector{T},
@@ -266,16 +236,14 @@ function soccorr!(
     return r
 end
 
-function corr!(
-        r::AbstractVector{T},
-        p::AbstractVector{T},
-        ::AbstractVector{T},
-        Δp::AbstractVector{T},
-        Δd::AbstractVector{T},
-        σμ::Real,
-        cache::SecondOrderConeCache{T}
-    ) where {T}
-    soccorr!(r, cache.w, cache.β[], p, Δp, Δd, σμ)
+# construct the identity element
+#
+#   e = (√2, 0, …, 0)
+#
+function socid!(x::AbstractVector{T}) where {T}
+    fill!(x, zero(T))
+    x[1] = sqrt(T(2))
+    return x
 end
 
 function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
@@ -358,6 +326,47 @@ function socmaxstep(x::AbstractVector{T}, Δx::AbstractVector{T}) where {T}
     return τ
 end
 
-function maxsteps(p::AbstractVector{T}, Δp::AbstractVector{T}, d::AbstractVector{T}, Δd::AbstractVector{T}, ::SecondOrderConeCache{T}) where {T}
+#
+# AbstractCone Interface
+#
+
+function degree(::SecondOrderCone, n::Integer)
+    return 2
+end
+
+function cachesize(::SecondOrderCone, n::Integer)
+    return 1 + n
+end
+
+function cache(c::Caches, i::Integer, cone::SecondOrderCone)
+    data = cachedata(c, i)
+    β = view(data, 1)
+    w = view(data, 2:length(data))
+    SecondOrderConeCache(cone, β, w)
+end
+
+function identity!(x::AbstractVector, ::SecondOrderCone)
+    return socid!(x)
+end
+
+function scale!(H::AbstractMatrix, p::AbstractVector, d::AbstractVector, cache::SecondOrderConeCache, ::ConeWorkspace)
+    cache.β[] = socscale!(H, cache.w, p, d)
+    return H
+end
+
+function corr!(
+        r::AbstractVector,
+        p::AbstractVector,
+        ::AbstractVector,
+        Δp::AbstractVector,
+        Δd::AbstractVector,
+        σμ::Real,
+        cache::SecondOrderConeCache,
+        ::ConeWorkspace,
+    )
+    soccorr!(r, cache.w, cache.β[], p, Δp, Δd, σμ)
+end
+
+function maxsteps(p::AbstractVector, Δp::AbstractVector, d::AbstractVector, Δd::AbstractVector, ::SecondOrderConeCache, ::ConeWorkspace)
     return socmaxstep(p, Δp), socmaxstep(d, Δd)
 end

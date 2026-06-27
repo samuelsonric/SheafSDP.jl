@@ -1,13 +1,5 @@
 #
-# Three-backend oracle test: POS / ℓ₁ consensus (§5 recipe)
-#
-# Benchmark: SheafSDP vs HiGHS vs Mosek on minimum-fuel consensus
-#
-# Reformulation (from conic-recipes.md §5):
-#   - Residual split: u = u⁺ - u⁻ with u⁺, u⁻ ≥ 0
-#   - Dynamics: x_{t+1} = A x_t + B(u⁺ - u⁻)
-#   - Box constraint: u⁺ + u⁻ + w = ū with w ≥ 0
-#   - Objective: min Σ(u⁺ + u⁻) = ‖u‖₁
+# Same as lp.jl but with 1D positive cones instead of nu-dimensional
 #
 using AppleAccelerate
 using SheafSDP
@@ -40,55 +32,54 @@ function run_benchmark(N, T; raug=1e7, ū=100.0)
 
         @variable(model, x[1:N, 1:T, 1:nx])
         @variable(model, u[1:N, 1:T-1, 1:nu])
-        @variable(model, t_abs[1:N, 1:T-1, 1:nu] >= 0)  # |u| ≤ t_abs
+        @variable(model, t_abs[1:N, 1:T-1, 1:nu] >= 0)
 
-        # Initial conditions
         for i in 1:N
             @constraint(model, x[i, 1, :] .== x0[i])
         end
 
-        # Dynamics
         for i in 1:N, t in 1:T-1
             @constraint(model, x[i, t+1, :] .== A_dyn * x[i, t, :] + B_dyn * u[i, t, :])
         end
 
-        # Consensus
         for (i, j) in edges
             @constraint(model, P_proj * x[i, T, :] .== P_proj * x[j, T, :])
         end
 
-        # Absolute value: -t_abs ≤ u ≤ t_abs
         for i in 1:N, t in 1:T-1
             @constraint(model, u[i, t, :] .<= t_abs[i, t, :])
             @constraint(model, -u[i, t, :] .<= t_abs[i, t, :])
         end
 
-        # Box constraint: |u| ≤ ū
         for i in 1:N, t in 1:T-1
             @constraint(model, t_abs[i, t, :] .<= ū)
         end
 
-        # ℓ₁ objective
         @objective(model, Min, sum(t_abs))
 
         optimize!(model)
         return objective_value(model)
     end
 
-    # SheafSDP with POS cones (§5 reformulation)
+    # SheafSDP with 1D POS cones
     function solve_sheaf()
-        blocks_per_agent = T + 3 * (T - 1)
+        # Each agent has:
+        #   T state blocks (nx each)
+        #   (T-1) * 3 * nu scalar positive cones (u⁺, u⁻, w for each control component)
+        blocks_per_agent = T + 3 * nu * (T - 1)
 
         col_x(i, t) = (i - 1) * blocks_per_agent + t
-        col_up(i, t) = (i - 1) * blocks_per_agent + T + 3 * (t - 1) + 1
-        col_um(i, t) = (i - 1) * blocks_per_agent + T + 3 * (t - 1) + 2
-        col_w(i, t) = (i - 1) * blocks_per_agent + T + 3 * (t - 1) + 3
+        # For 1D cones: index by (i, t, k) where k ∈ 1:nu
+        col_up(i, t, k) = (i - 1) * blocks_per_agent + T + 3 * nu * (t - 1) + k
+        col_um(i, t, k) = (i - 1) * blocks_per_agent + T + 3 * nu * (t - 1) + nu + k
+        col_w(i, t, k)  = (i - 1) * blocks_per_agent + T + 3 * nu * (t - 1) + 2 * nu + k
 
-        rows_per_agent = 2 * T - 1
+        # Rows: dynamics are still nx-dimensional, but box constraints are now 1D each
+        rows_per_agent = T + nu * (T - 1)
 
         row_init(i) = (i - 1) * rows_per_agent + 1
         row_dyn(i, t) = (i - 1) * rows_per_agent + 1 + t
-        row_box(i, t) = (i - 1) * rows_per_agent + T + t
+        row_box(i, t, k) = (i - 1) * rows_per_agent + T + nu * (t - 1) + k
         row_coord(e) = N * rows_per_agent + e
 
         row_ids, col_ids, blocks = Int[], Int[], Matrix{Float64}[]
@@ -99,14 +90,22 @@ function run_benchmark(N, T; raug=1e7, ū=100.0)
             push!(blocks, Matrix(1.0I, nx, nx))
 
             for t in 1:T-1
+                # Dynamics: x_{t+1} = A x_t + B(u⁺ - u⁻)
                 push!(row_ids, row_dyn(i, t)); push!(col_ids, col_x(i, t)); push!(blocks, -A_dyn)
                 push!(row_ids, row_dyn(i, t)); push!(col_ids, col_x(i, t + 1)); push!(blocks, Matrix(1.0I, nx, nx))
-                push!(row_ids, row_dyn(i, t)); push!(col_ids, col_up(i, t)); push!(blocks, -B_dyn)
-                push!(row_ids, row_dyn(i, t)); push!(col_ids, col_um(i, t)); push!(blocks, B_dyn)
 
-                push!(row_ids, row_box(i, t)); push!(col_ids, col_up(i, t)); push!(blocks, Matrix(1.0I, nu, nu))
-                push!(row_ids, row_box(i, t)); push!(col_ids, col_um(i, t)); push!(blocks, Matrix(1.0I, nu, nu))
-                push!(row_ids, row_box(i, t)); push!(col_ids, col_w(i, t)); push!(blocks, Matrix(1.0I, nu, nu))
+                # B_dyn columns split into 1D blocks
+                for k in 1:nu
+                    push!(row_ids, row_dyn(i, t)); push!(col_ids, col_up(i, t, k)); push!(blocks, -B_dyn[:, k:k])
+                    push!(row_ids, row_dyn(i, t)); push!(col_ids, col_um(i, t, k)); push!(blocks,  B_dyn[:, k:k])
+                end
+
+                # Box constraints: u⁺_k + u⁻_k + w_k = ū (one row per k)
+                for k in 1:nu
+                    push!(row_ids, row_box(i, t, k)); push!(col_ids, col_up(i, t, k)); push!(blocks, ones(1, 1))
+                    push!(row_ids, row_box(i, t, k)); push!(col_ids, col_um(i, t, k)); push!(blocks, ones(1, 1))
+                    push!(row_ids, row_box(i, t, k)); push!(col_ids, col_w(i, t, k));  push!(blocks, ones(1, 1))
+                end
             end
         end
 
@@ -118,16 +117,16 @@ function run_benchmark(N, T; raug=1e7, ū=100.0)
         B = blocksparse(row_ids, col_ids, blocks)
 
         c = zeros(size(B, 2))
-        for i in 1:N, t in 1:T-1
-            c[colrange(B, col_up(i, t))] .= 1.0
-            c[colrange(B, col_um(i, t))] .= 1.0
+        for i in 1:N, t in 1:T-1, k in 1:nu
+            c[colrange(B, col_up(i, t, k))] .= 1.0
+            c[colrange(B, col_um(i, t, k))] .= 1.0
         end
 
         g = zeros(size(B, 1))
         for i in 1:N
             g[rowrange(B, row_init(i))] .= x0[i]
-            for t in 1:T-1
-                g[rowrange(B, row_box(i, t))] .= ū
+            for t in 1:T-1, k in 1:nu
+                g[rowrange(B, row_box(i, t, k))] .= ū
             end
         end
 
@@ -140,10 +139,10 @@ function run_benchmark(N, T; raug=1e7, ū=100.0)
             for t in 1:T
                 cones[col_x(i, t)] = CofreeCone()
             end
-            for t in 1:T-1
-                cones[col_up(i, t)] = PositiveCone()
-                cones[col_um(i, t)] = PositiveCone()
-                cones[col_w(i, t)] = PositiveCone()
+            for t in 1:T-1, k in 1:nu
+                cones[col_up(i, t, k)] = PositiveCone()
+                cones[col_um(i, t, k)] = PositiveCone()
+                cones[col_w(i, t, k)]  = PositiveCone()
             end
         end
 
@@ -180,13 +179,14 @@ function run_benchmark(N, T; raug=1e7, ū=100.0)
 end
 
 # Run benchmark sweep
-println("POS/ℓ₁ Consensus Benchmark: SheafSDP vs HiGHS vs Mosek")
-println("=======================================================")
+println("POS/ℓ₁ Consensus Benchmark (1D cones): SheafSDP vs HiGHS vs Mosek")
+println("==================================================================")
 println()
 println("Problem: N agents on complete graph K_N, T timesteps")
 println("Dynamics: planar double integrator (nx=4, nu=2)")
 println("Objective: minimum fuel ‖u‖₁")
 println("Constraints: dynamics + box |u| ≤ 100 + terminal position consensus")
+println("Note: Each positive variable is a separate 1D cone")
 println()
 
 results = []

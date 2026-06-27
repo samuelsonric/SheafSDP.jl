@@ -1,20 +1,30 @@
-#
-# primal-dual interior point method
-#
-# primal: min c'p  s.t. Bp = g, P ≻ 0
-# dual:   max g'y  s.t. B'y + d = c, D ≻ 0
-#
-# p, d are svec representations of block-diagonal P, D
-#
+@enum IPMStatus CONTINUE OPTIMAL NEAR_OPTIMAL STALLED NUMERICAL_FAILURE ITERATION_LIMIT
 
-@enum IPMStatus OPTIMAL NEAR_OPTIMAL STALLED NUMERICAL_FAILURE ITERATION_LIMIT
-
-struct IPMProblem{T, I, C<:Cone}
-    c::Vector{T}
-    g::Vector{T}
-    B::BlockSparseMatrix{T, I}
+struct IPMProblem{T, I, C <: AbstractCone}
     Q::BlockSparseMatrix{T, I}
-    cones::Vector{C}
+    B::BlockSparseMatrix{T, I}
+    c::FVector{T}
+    g::FVector{T}
+    cones::FVector{C}
+
+    function IPMProblem(Q::BlockSparseMatrix{T, I}, B::BlockSparseMatrix{T, I}, c::FVector{T}, g::FVector{T}, cones::FVector{C}) where {T, I, C <: AbstractCone}
+        @assert nrows(B) == length(g)
+        @assert ncols(B) == ncols(Q) == length(c)
+        @assert nvtxs(B) == nvtxs(Q) == length(cones)
+
+        for v in vtxs(B)
+            @assert ncols(B, v) == ncols(Q, v)
+        end
+
+        return new{T, I, C}(Q, B, c, g, cones)
+    end
+end
+
+function IPMProblem(Q::BlockSparseMatrix, B::BlockSparseMatrix, c::AbstractVector, g::AbstractVector, cones::AbstractVector)
+    c = FVector(c)
+    g = FVector(g)
+    cones = FVector(cones)
+    return IPMProblem(Q, B, c, g, cones)
 end
 
 @kwdef struct IPMSettings{T}
@@ -37,67 +47,126 @@ struct IPMResult{T}
     d::Vector{T}
     y::Vector{T}
     status::IPMStatus
-    iterations::Int
-    kkt_iters::Int
+    ipm_niter::Int
+    kkt_niter::Int
     history::History{T}
 end
 
-mutable struct IPMSolver{T, I, W, Perm}
-    # problem data
-    p::Vector{T}
-    d::Vector{T}
-    y::Vector{T}
-    c::Vector{T}
-    g::Vector{T}
-    B::BlockSparseMatrix{T, I}
+struct IPMWorkspace{T}
+    # residuals
+    rp::FVector{T}
+    rd::FVector{T}
+    # Newton RHS
+    f::FVector{T}
+    # affine directions
+    Δpa::FVector{T}
+    Δya::FVector{T}
+    Δda::FVector{T}
+    # corrector directions
+    Δp::FVector{T}
+    Δy::FVector{T}
+    Δd::FVector{T}
+    # refinement workspace
+    sp::FVector{T}
+    sy::FVector{T}
+    dp::FVector{T}
+    dy::FVector{T}
+end
+
+function IPMWorkspace{T}(m::Integer, n::Integer) where {T}
+    return IPMWorkspace{T}(
+        FVector{T}(undef, m),  # rp
+        FVector{T}(undef, n),  # rd
+        FVector{T}(undef, n),  # f
+        FVector{T}(undef, n),  # Δpa
+        FVector{T}(undef, m),  # Δya
+        FVector{T}(undef, n),  # Δda
+        FVector{T}(undef, n),  # Δp
+        FVector{T}(undef, m),  # Δy
+        FVector{T}(undef, n),  # Δd
+        FVector{T}(undef, n),  # sp
+        FVector{T}(undef, m),  # sy
+        FVector{T}(undef, n),  # dp
+        FVector{T}(undef, m),  # dy
+    )
+end
+
+struct IPMSolver{T, I, K, C}
     Q::BlockSparseMatrix{T, I}
-    cones::Vector{<:Cone}
+    H::BlockSparseMatrix{T, I}
+    B::BlockSparseMatrix{T, I}
+    c::FVector{T}
+    g::FVector{T}
+    p::FVector{T}
+    d::FVector{T}
+    y::FVector{T}
+
+    # cones
+    cones::FVector{C}
 
     # scaling
     scaling::Scaling{T}
 
     # permutation
-    P::Perm
+    P::FPermutation{I}
 
     # workspace
-    rp::Vector{T}
-    rd::Vector{T}
-    f::Vector{T}
-    Δpa::Vector{T}
-    Δya::Vector{T}
-    Δda::Vector{T}
-    Δp::Vector{T}
-    Δy::Vector{T}
-    Δd::Vector{T}
-    H::BlockSparseMatrix{T, I}
+    wrk::IPMWorkspace{T}
     caches::Caches{T, I}
-    wrk::W
-    # refinement workspace
-    sp::Vector{T}
-    sy::Vector{T}
-    dp::Vector{T}
-    dy::Vector{T}
+    conewrk::ConeWorkspace{T}
+    kkt::K
 
     # state
     hist::History{T}
-    iter::Int
-    kkt_iters::Int
-    status::IPMStatus
     ν::Int
 
     # settings
     settings::IPMSettings{T}
 end
 
+function IPMResult(s::IPMSolver{T}, status::IPMStatus) where {T}
+    p = Vector{T}(undef, length(s.p))
+    d = Vector{T}(undef, length(s.d))
+    y = Vector{T}(undef, length(s.y))
+
+    ldiv!(p, s.P, s.p)
+    ldiv!(d, s.P, s.d)
+    copyto!(y, s.y)
+
+    unscale!(p, d, y, s.scaling)
+
+    ipm_niter = 0
+    kkt_niter = 0
+
+    for row in s.hist
+        ipm_niter += 1
+        kkt_niter += row.niter
+    end
+
+    return IPMResult{T}(p, d, y, status, ipm_niter, kkt_niter, s.hist)
+end
+
 function conedegree(cones::AbstractVector, B::BlockSparseMatrix)
     ν = 0
+
     for v in vtxs(B)
         ν += degree(cones[v], ncols(B, v))
     end
+
     return ν
 end
 
-function residuals!(rp, rd, B, p, d, y, c, g, Q)
+function residuals!(
+        rp::AbstractVector,
+        rd::AbstractVector,
+        B::BlockSparseMatrix,
+        p::AbstractVector,
+        d::AbstractVector,
+        y::AbstractVector,
+        c::AbstractVector,
+        g::AbstractVector,
+        Q::BlockSparseMatrix,
+    )
     #
     # compute the primal residual:
     #
@@ -118,31 +187,51 @@ function residuals!(rp, rd, B, p, d, y, c, g, Q)
     return rp, rd
 end
 
-function scale!(H::BlockSparseMatrix{T}, caches::Caches{T},
-                cones::AbstractVector, p::AbstractVector{T}, d::AbstractVector{T},
-                B::BlockSparseMatrix{T}, Q) where {T}
-    for v in vtxs(B)
-        r = colrange(B, v)
-        Hv = block(H, v, v, v)
-        cv = cache(caches, v, cones[v])
-
-        scale!(Hv, view(p, r), view(d, r), cv)
-        axpy!(true, block(Q, v, v, v), Hv)
-    end
-
+function scale!(
+        cone::AbstractCone,
+        v::Integer,
+        H::BlockSparseMatrix,
+        caches::Caches,
+        p::AbstractVector,
+        d::AbstractVector,
+        B::BlockSparseMatrix,
+        Q::BlockSparseMatrix,
+        conewrk::ConeWorkspace,
+    )
+    r = colrange(B, v)
+    Hv = block(H, v, v, v)
+    cv = cache(caches, v, cone)
+    scale!(Hv, view(p, r), view(d, r), cv, conewrk)
+    axpy!(true, block(Q, v, v, v), Hv)
     return
 end
 
-function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q, sp, sy, dp, dy, y0 = nothing;
-                 refine::Bool=false, refine_itmax::Int=10, refine_atol=1e-12, refine_rtol=1e-13)
+function newton!(
+        Δp::AbstractVector,
+        Δy::AbstractVector,
+        Δd::AbstractVector,
+        wrk::KKTWorkspace,
+        set::KKTSettings,
+        H::BlockSparseMatrix,
+        B::BlockSparseMatrix,
+        f::AbstractVector,
+        rp::AbstractVector,
+        rd::AbstractVector,
+        Q::BlockSparseMatrix,
+        sp::AbstractVector,
+        sy::AbstractVector,
+        dp::AbstractVector,
+        dy::AbstractVector,
+        y0 = nothing;
+        itmax::Integer = 0,
+        atol::Real = 1e-12,
+        rtol::Real = 1e-13,
+    )
     kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0)
 
-    if refine
-        kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy;
-                                 itmax=refine_itmax, atol=refine_atol, rtol=refine_rtol)
+    if itmax > 0
+        kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy; itmax, atol, rtol)
     end
-
-    lmul!(-1, Δy)
 
     copyto!(Δd, rd)
     mul!(Δd, B', Δy, -1, 1)
@@ -151,217 +240,202 @@ function newton!(Δp, Δy, Δd, wrk, set, H, B, f, rp, rd, Q, sp, sy, dp, dy, y0
     return kkt_iters
 end
 
-function corrector!(f, caches, cones, p, d, Δp, Δd, σμ, B)
-    for v in vtxs(B)
-        r = colrange(B, v)
-        cv = cache(caches, v, cones[v])
-        corr!(view(f, r), view(p, r), view(d, r), view(Δp, r), view(Δd, r), σμ, cv)
-    end
-
-    return f
+function corrector!(
+        cone::AbstractCone,
+        v::Integer,
+        f::AbstractVector,
+        caches::Caches,
+        p::AbstractVector,
+        d::AbstractVector,
+        Δp::AbstractVector,
+        Δd::AbstractVector,
+        σμ::Real,
+        B::BlockSparseMatrix,
+        conewrk::ConeWorkspace,
+    )
+    r = colrange(B, v)
+    cv = cache(caches, v, cone)
+    corr!(view(f, r), view(p, r), view(d, r), view(Δp, r), view(Δd, r), σμ, cv, conewrk)
+    return
 end
 
-function maxsteps(p, d, Δp, Δd, caches, cones, B; frac=0.99)
-    T = eltype(p)
-    τp = one(T)
-    τd = one(T)
-
-    for v in vtxs(B)
-        r = colrange(B, v)
-        cv = cache(caches, v, cones[v])
-        τp_v, τd_v = maxsteps(view(p, r), view(Δp, r), view(d, r), view(Δd, r), cv)
-        τp = min(τp, τp_v)
-        τd = min(τd, τd_v)
-    end
-
-    return frac * τp, frac * τd
+function maxsteps(
+        cone::AbstractCone,
+        v::Integer,
+        p::AbstractVector,
+        d::AbstractVector,
+        Δp::AbstractVector,
+        Δd::AbstractVector,
+        caches::Caches,
+        B::BlockSparseMatrix,
+        conewrk::ConeWorkspace,
+    )
+    r = colrange(B, v)
+    cv = cache(caches, v, cone)
+    return maxsteps(view(p, r), view(Δp, r), view(d, r), view(Δd, r), cv, conewrk)
 end
 
-#
-# scaled (Mehrotra-style) starting point
-#
-# Start from the block-diagonal cone identity e and scale the primal and
-# dual copies independently so the two initial infeasibilities live on the
-# same scale as the data:
-#
-#   primal:  ξ chosen so that ‖B (ξe)‖ ≈ ‖g‖   (reach the consensus RHS)
-#   dual:    η chosen so that   ‖ηe‖   ≈ ‖c‖    (balance the cost)
-#
-# This removes the "scale-discovery" phase where μ shoots up several orders
-# of magnitude on the first step because both copies start at e. A positive
-# multiple of e is still perfectly centered, so no interior shift is needed,
-# and y can stay at 0 (dual feasibility is reached quickly regardless).
-#
-function startingpoint(B::BlockSparseMatrix{T}, g::AbstractVector{T},
-                       c::AbstractVector{T}, cones::AbstractVector) where {T}
+function startingpoint(B::BlockSparseMatrix{T}, g::AbstractVector{T}, c::AbstractVector{T}, cones::AbstractVector) where {T}
     m, n = size(B)
 
-    e = zeros(T, n)
+    p = FVector{T}(undef, n)
+    d = FVector{T}(undef, n)
+    y = FVector{T}(undef, m)
+    z = FVector{T}(undef, m)
+
     for v in vtxs(B)
-        identity!(view(e, colrange(B, v)), cones[v])
+        r = colrange(B, v)
+        identity!(view(p, r), cones[v])
+        identity!(view(d, r), cones[v])
     end
 
-    Be = zeros(T, m)
-    mul!(Be, B, e)
+    mul!(z, B, p)
 
-    # If Be ≈ 0, scaling ξ can't help reach g (need to move orthogonal to e).
-    # Cap the ratio to avoid blowing up when Be is tiny.
-    nBe = norm(Be)
-    ne = norm(e)
+    np = norm(p)
+    nz = norm(z)
 
-    if nBe > eps(T) * ne
-        ξ = max(one(T), norm(g) / nBe)
+    if nz > eps(T) * np
+        ξ = max(one(T), norm(g) / nz)
     else
         ξ = one(T)
     end
 
-    if ne > eps(T)
-        η = max(one(T), norm(c) / ne)
+    if np > eps(T)
+        η = max(one(T), norm(c) / np)
     else
         η = one(T)
     end
 
-    p = ξ .* e
-    d = η .* e
-    y = zeros(T, m)
+    lmul!(ξ, p)
+    lmul!(η, d)
+
+    fill!(y, zero(T))
 
     return p, d, y
 end
 
-function isstalled(hist::History; window=5, threshold=0.99, noise_floor=1e-12)
-    n = length(hist.μ)
+function isstalled(hist::History{T}; window=5, threshold=0.99) where {T}
+    n = length(hist)
+
     if n < window + 1
         return false
     end
-    # Check if progress is being made on μ, rp, or rd
-    # Ignore "improvements" when values are already at noise floor (machine precision)
-    μ_improved = false
-    rp_improved = false
-    rd_improved = false
 
-    for i in (n-window+1):n
-        if hist.μ[i] < threshold * hist.μ[i-1]
-            μ_improved = true
+    floor = √eps(T)
+
+    for i in n - window + 1:n
+        if hist.μ[i] < threshold * hist.μ[i - 1]
+            return false
         end
-        # Only count residual improvement if not at machine precision noise floor
-        if hist.rp[i-1] > noise_floor && hist.rp[i] < threshold * hist.rp[i-1]
-            rp_improved = true
+
+        if hist.pres[i - 1] > floor && hist.pres[i] < threshold * hist.pres[i - 1]
+            return false
         end
-        if hist.rd[i-1] > noise_floor && hist.rd[i] < threshold * hist.rd[i-1]
-            rd_improved = true
+
+        if hist.dres[i - 1] > floor && hist.dres[i] < threshold * hist.dres[i - 1]
+            return false
         end
     end
 
-    # Stall if no measure improved within the window
-    return !μ_improved && !rp_improved && !rd_improved
+    return true
 end
 
-# Check if solution is "near optimal" - residuals and gap within relaxed tolerances
-function isnearoptimal(hist::History, feas_tol, gap_tol, near_factor)
-    if isempty(hist.μ)
+function isnearoptimal(hist::History; feas_tol, gap_tol, near_factor)
+    if isempty(hist)
         return false
     end
-    μ = hist.μ[end]
-    rp = hist.rp[end]
-    rd = hist.rd[end]
-    # Accept if residuals and gap are within near_factor of tolerances
+
+    μ  = hist.μ[end]
+    rp = hist.pres[end]
+    rd = hist.dres[end]
+
     return rp < near_factor * feas_tol && rd < near_factor * feas_tol && μ < near_factor * gap_tol
 end
 
 function isnumfail(hist::History; window=3, threshold=1e-6)
-    if length(hist.τp) < window
+    if length(hist.pstep) < window
         return false
     end
 
-    τavg = sum(hist.τp[end-window+1:end]) / window
-    τavg = min(τavg, sum(hist.τd[end-window+1:end]) / window)
+    τavg = sum(hist.pstep[end-window+1:end]) / window
+    τavg = min(τavg, sum(hist.dstep[end-window+1:end]) / window)
 
     if τavg > threshold
         return false
     end
 
-    if length(hist.rp) < window + 1
+    if length(hist.pres) < window + 1
         return true
     end
 
-    return hist.rp[end] > 0.9 * hist.rp[end - window] || hist.rd[end] > 0.9 * hist.rd[end - window]
+    return hist.pres[end] > 0.9 * hist.pres[end - window] || hist.dres[end] > 0.9 * hist.dres[end - window]
 end
 
 function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
-    c0, g0, B0, Q0 = prob.c, prob.g, prob.B, prob.Q
-    cones0 = prob.cones
-
-    n = size(B0, 2)
-    m = size(B0, 1)
-
-    # equilibrate in original space (before permutation)
+    n = size(prob.B, 2)
+    m = size(prob.B, 1)
+    ν = conedegree(prob.cones, prob.B)
+    #
+    # equilibrate problem data
+    #
     scaling = Scaling{T}(n, m)
+
     if settings.scale_itmax > 0
-        B_eq = copy(B0)
-        Q_eq = copy(Q0)
-        c_eq = copy(c0)
-        g_eq = copy(g0)
-        equilibrate!(scaling, B_eq, Q_eq, c_eq, g_eq; itmax=settings.scale_itmax)
+        B = copy(prob.B)
+        Q = copy(prob.Q)
+        c = copy(prob.c)
+        g = copy(prob.g)
+
+        equilibrate!(scaling, B, Q, c, g; itmax=settings.scale_itmax)
     else
-        B_eq = B0
-        Q_eq = Q0
-        c_eq = c0
-        g_eq = g0
+        B = prob.B
+        Q = prob.Q
+        c = prob.c
+        g = prob.g
     end
-
-    kktset = settings.kkt
-    R, P, B, wrk = make_kkt(kktset, B_eq)
-
-    c = P * c_eq
-    g = copy(g_eq)
-    Q = halfselectvtxs(halfselectvtxs(Q_eq, R.perm), R.perm)
-    cones = cones0[R.perm]
-
-    # compute starting point on (possibly scaled) data
+    #
+    # initialize kkt solver
+    #
+    R, P, B, kkt = make_kkt(settings.kkt, B)
+    #
+    # permute problem data
+    #
+    c = P * c
+    Q = halfselectvtxs(halfselectvtxs(Q, R.perm), R.perm)
+    cones = tounion(prob.cones, R.perm)
+    #
+    # compute starting point
+    #
     p, d, y = startingpoint(B, g, c, cones)
-
-    ν = conedegree(cones, B)
-
-    rp = zeros(T, m)
-    rd = zeros(T, n)
-    f = zeros(T, n)
-
-    Δpa = zeros(T, n)
-    Δya = zeros(T, m)
-    Δda = zeros(T, n)
-    Δp = zeros(T, n)
-    Δy = zeros(T, m)
-    Δd = zeros(T, n)
-
-    H = allocblockdiag(B)
+    #
+    # initialize per-cone caches
+    #
     caches = Caches(cones, B)
+
     for v in vtxs(B)
         initcache!(cache(caches, v, cones[v]))
     end
-    sp = zeros(T, n)
-    sy = zeros(T, m)
-    dp = zeros(T, n)
-    dy = zeros(T, m)
+
+    H = allocblockdiag(B)
+    conewrk = ConeWorkspace{T}(cones, B)
+    ipmwrk = IPMWorkspace{T}(m, n)
     hist = History{T}()
 
-    return IPMSolver(
-        p, d, y, c, g, B, Q, cones,
-        scaling,
-        P,
-        rp, rd, f, Δpa, Δya, Δda, Δp, Δy, Δd, H, caches, wrk, sp, sy, dp, dy,
-        hist, 0, 0, ITERATION_LIMIT, ν,
-        settings
+    return IPMSolver(Q, H, B, c, g, p, d, y, cones,
+        scaling, P, ipmwrk, caches, conewrk, kkt,
+        hist, ν, settings
     )
 end
 
 function step!(s::IPMSolver{T}) where {T}
+    w = s.wrk
     #
     # compute the primal and dual residuals:
     #
     #   rp = g - B p
     #   rd = c - d + Q p - Bᵀ y
     #
-    residuals!(s.rp, s.rd, s.B, s.p, s.d, s.y, s.c, s.g, s.Q)
+    residuals!(w.rp, w.rd, s.B, s.p, s.d, s.y, s.c, s.g, s.Q)
 
     if iszero(s.ν)
         μ = zero(T)
@@ -369,9 +443,13 @@ function step!(s::IPMSolver{T}) where {T}
         μ = dot(s.p, s.d) / s.ν
     end
     #
-    # iterative refinement only in endgame (when μ is close to gap_tol)
+    # iterative refinement only in endgame
     #
-    do_refine = μ < 100 * s.settings.gap_tol
+    if μ < 100 * s.settings.gap_tol
+        refine_itmax = s.settings.refine_itmax
+    else
+        refine_itmax = 0
+    end
     #
     # check the quantities
     #
@@ -381,12 +459,11 @@ function step!(s::IPMSolver{T}) where {T}
     #
     # for convergence
     #
-    nrp = norm(s.rp) / (1 + norm(s.g))
-    nrd = norm(s.rd) / (1 + norm(s.c))
+    nrp = norm(w.rp) / (1 + norm(s.g))
+    nrd = norm(w.rd) / (1 + norm(s.c))
 
     if nrp < s.settings.feas_tol && nrd < s.settings.feas_tol && (iszero(s.ν) || μ < s.settings.gap_tol)
-        s.status = OPTIMAL
-        return false
+        return OPTIMAL
     end
     #
     # compute the sum
@@ -396,129 +473,149 @@ function step!(s::IPMSolver{T}) where {T}
     # where f is the barrier function and
     # w is the scaling point.
     #
-    scale!(s.H, s.caches, s.cones, s.p, s.d, s.B, s.Q)
+    for v in vtxs(s.B)
+        scale!(s.cones[v], v, s.H, s.caches, s.p, s.d, s.B, s.Q, s.conewrk)
+    end
 
-    if !init_kkt!(s.wrk, s.settings.kkt, s.H)
-        s.status = NUMERICAL_FAILURE
-
+    if !init_kkt!(s.kkt, s.settings.kkt, s.H)
         if s.settings.verbose
             println("Warning: KKT factorization failed")
         end
 
-        return false
+        return NUMERICAL_FAILURE
     end
     #
     # compute the affine direction (Δpa, Δya, Δda)
     # by solving for Δpa, Δya in
     #
-    #   [ H  Bᵀ ] [ Δpa ] = [ -d - rd ]
+    #   [ H -Bᵀ ] [ Δpa ] = [ -d - rd ]
     #   [ B  0  ] [ Δya ]   [ rp      ]
     #
     # and setting Δda to the value
     #
     #   Δda = rd - Bᵀ Δya + Q Δpa
     #
-    axpby!(-1, s.d,  0, s.f)
-    axpby!(-1, s.rd, 1, s.f)
-    kkt_iters_aff = newton!(s.Δpa, s.Δya, s.Δda, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q, s.sp, s.sy, s.dp, s.dy;
-                            refine=do_refine, refine_itmax=s.settings.refine_itmax,
-                            refine_atol=s.settings.refine_atol, refine_rtol=s.settings.refine_rtol)
+    axpby!(-1, s.d,  0, w.f)
+    axpby!(-1, w.rd, 1, w.f)
+
+    kkt_iters_aff = newton!(w.Δpa, w.Δya, w.Δda, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy;
+                            itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol)
     #
     # compute the centering parameter
     #
-    #   σ ∈ [0, 1]
+    #   σμ ∈ [0, μ]
     #
-    τpa, τda = maxsteps(s.p, s.d, s.Δpa, s.Δda, s.caches, s.cones, s.B; frac=one(T))
+    τpa = one(T)
+    τda = one(T)
 
-    pa = s.p + τpa * s.Δpa
-    da = s.d + τda * s.Δda
-    μa = dot(pa, da) / s.ν
+    for v in vtxs(s.B)
+        τpv, τdv = maxsteps(s.cones[v], v, s.p, s.d, w.Δpa, w.Δda, s.caches, s.B, s.conewrk)
+        τpa = min(τpa, τpv)
+        τda = min(τda, τdv)
+    end
 
-    σ = clamp((μa / μ)^3, zero(T), one(T))
+    σμ = zero(T)
+
+    for j in cols(s.B)
+        σμ += (s.p[j] + τpa * w.Δpa[j]) * (s.d[j] + τda * w.Δda[j])
+    end
+
+    σμ /= s.ν
+    σμ  = clamp(σμ * (σμ / μ)^2, zero(T), μ)
     #
     # solve for the corrector direction (Δp, Δy, Δd)
     # by solving for Δp, Δy in
     #
-    #   [ H  Bᵀ ] [ Δp ] = [ -d - rd + σμ e - Δpa ∘ Δda ]
+    #   [ H -Bᵀ ] [ Δp ] = [ -d - rd + σμ e - Δpa ∘ Δda ]
     #   [ B  0  ] [ Δy ]   [ rp                         ]
     #
     # and setting Δd to the value
     #
     #   Δd = rd - Bᵀ Δy + Q Δp
     #
-    corrector!(s.f, s.caches, s.cones, s.p, s.d, s.Δpa, s.Δda, σ * μ, s.B)
-    axpy!(-1, s.rd, s.f)
-    lmul!(-1, s.Δya)
-    kkt_iters_corr = newton!(s.Δp, s.Δy, s.Δd, s.wrk, s.settings.kkt, s.H, s.B, s.f, s.rp, s.rd, s.Q, s.sp, s.sy, s.dp, s.dy, s.Δya;
-                             refine=do_refine, refine_itmax=s.settings.refine_itmax,
-                             refine_atol=s.settings.refine_atol, refine_rtol=s.settings.refine_rtol)
+    for v in vtxs(s.B)
+        corrector!(s.cones[v], v, w.f, s.caches, s.p, s.d, w.Δpa, w.Δda, σμ, s.B, s.conewrk)
+    end
+
+    axpy!(-1, w.rd, w.f)
+
+    kkt_iters_corr = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
+                             itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol)
+
     kkt_iters = kkt_iters_aff + kkt_iters_corr
     #
     # take a step in the direction
     #
     #   (Δp, Δy, Δd)
     #
-    τp, τd = maxsteps(s.p, s.d, s.Δp, s.Δd, s.caches, s.cones, s.B; frac=s.settings.step_frac)
+    τp, τd = one(T), one(T)
 
-    axpy!(τp, s.Δp, s.p)
-    axpy!(τd, s.Δd, s.d)
-    axpy!(τd, s.Δy, s.y)
+    for v in vtxs(s.B)
+        τpv, τdv = maxsteps(s.cones[v], v, s.p, s.d, w.Δp, w.Δd, s.caches, s.B, s.conewrk)
+        τp = min(τp, τpv)
+        τd = min(τd, τdv)
+    end
 
-    push!(s.hist, (μ=μ, τp=τp, τd=τd, rp=nrp, rd=nrd, kkt_iters=kkt_iters))
-    s.iter += 1
-    s.kkt_iters += kkt_iters
+    τp *= s.settings.step_frac
+    τd *= s.settings.step_frac
+
+    axpy!(τp, w.Δp, s.p)
+    axpy!(τd, w.Δd, s.d)
+    axpy!(τd, w.Δy, s.y)
+
+    push!(s.hist, (μ=μ, pstep=τp, dstep=τd, pres=nrp, dres=nrd, niter=kkt_iters))
 
     if s.settings.verbose
-        printrow(s.iter, s.hist[end])
+        printrow(length(s.hist), s.hist[end])
     end
 
     if isstalled(s.hist)
-        # Check if we're "near optimal" - residuals and μ are small enough
-        if isnearoptimal(s.hist, s.settings.feas_tol, s.settings.gap_tol, s.settings.near_factor)
-            s.status = NEAR_OPTIMAL
+        if isnearoptimal(s.hist; feas_tol=s.settings.feas_tol, gap_tol=s.settings.gap_tol, near_factor=s.settings.near_factor)
             if s.settings.verbose
                 println("μ stalling detected but solution is near-optimal; accepting")
             end
-        else
-            s.status = STALLED
-            if s.settings.verbose
-                println("Warning: μ stalling detected (μ=$(s.hist.μ[end]), rp=$(s.hist.rp[end]), rd=$(s.hist.rd[end]))")
-            end
-        end
 
-        return false
+            return NEAR_OPTIMAL
+        else
+            if s.settings.verbose
+                println("Warning: μ stalling detected (μ=$(s.hist.μ[end]), rp=$(s.hist.pres[end]), rd=$(s.hist.dres[end]))")
+            end
+
+            return STALLED
+        end
     end
 
     if isnumfail(s.hist; threshold=s.settings.step_collapse_threshold)
-        # Check if we're "near optimal" before declaring failure
-        if isnearoptimal(s.hist, s.settings.feas_tol, s.settings.gap_tol, s.settings.near_factor)
-            s.status = NEAR_OPTIMAL
+        if isnearoptimal(s.hist; feas_tol=s.settings.feas_tol, gap_tol=s.settings.gap_tol, near_factor=s.settings.near_factor)
             if s.settings.verbose
                 println("Step collapse detected but solution is near-optimal; accepting")
             end
+
+            return NEAR_OPTIMAL
         else
-            s.status = NUMERICAL_FAILURE
             if s.settings.verbose
                 println("Warning: numerical failure detected")
             end
-        end
 
-        return false
+            return NUMERICAL_FAILURE
+        end
     end
 
-    return s.iter < s.settings.itmax
+    if length(s.hist) >= s.settings.itmax
+        return ITERATION_LIMIT
+    end
+
+    return CONTINUE
 end
 
-function CommonSolve.solve!(s::IPMSolver{T}) where {T}
-    while step!(s) end
+function CommonSolve.solve!(s::IPMSolver)
+    status = CONTINUE
 
-    # unpermute first, then unscale (scaling is in original space)
-    p = s.P \ s.p
-    d = s.P \ s.d
-    y = copy(s.y)
-    unscale!(p, d, y, s.scaling)
+    while status == CONTINUE
+        status = step!(s)
+    end
 
-    return IPMResult{T}(p, d, y, s.status, s.iter, s.kkt_iters, s.hist)
+    return IPMResult(s, status)
 end
 
 function CommonSolve.solve(prob::IPMProblem, settings::IPMSettings=IPMSettings{eltype(prob.c)}())

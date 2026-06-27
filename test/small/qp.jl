@@ -91,10 +91,10 @@ function run_benchmark(N, T; raug=1e9)
 
         nv = N * (T + T - 1)
         cones = [CofreeCone() for _ in 1:nv]
-        prob = IPMProblem(c, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c, g, cones)
         settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=raug), feas_tol=1e-8, gap_tol=1e-8, itmax=100)
         result = solve(prob, settings)
-        return 0.5 * dot(result.p, Symmetric(sparse(Q), :L) * result.p), result.iterations, result.kkt_iters
+        return 0.5 * dot(result.p, Symmetric(sparse(Q), :L) * result.p), result.ipm_niter, result.kkt_niter
     end
 
     # Warmup

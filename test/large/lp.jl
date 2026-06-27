@@ -128,7 +128,7 @@ function run_benchmark(; raug=1e8, scale=1)
         # Cones: all PositiveCone
         cones = [PositiveCone() for _ in 1:2*N]
 
-        prob = IPMProblem(c_vec, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c_vec, g, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-6, gap_tol=1e-6, itmax=100
@@ -138,7 +138,7 @@ function run_benchmark(; raug=1e8, scale=1)
         # Extract solution
         x_sol = [result.p[colrange(B, col_x(i))] for i in 1:N]
 
-        return dot(c_vec, result.p), x_sol, result.iterations, result.kkt_iters, result.status
+        return dot(c_vec, result.p), x_sol, result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

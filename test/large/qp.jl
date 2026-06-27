@@ -133,7 +133,7 @@ function run_benchmark(; raug=1e9, ε_R=0.01, scale=1)
         # Cones: all CofreeCone
         cones = [CofreeCone() for _ in 1:N]
 
-        prob = IPMProblem(c_vec, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c_vec, g, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-8, gap_tol=1e-8, itmax=100
@@ -146,7 +146,7 @@ function run_benchmark(; raug=1e9, ε_R=0.01, scale=1)
         # Extract solution
         x_sol = [result.p[colrange(B, col_x(i))] for i in 1:N]
 
-        return obj, x_sol, result.iterations, result.kkt_iters, result.status
+        return obj, x_sol, result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

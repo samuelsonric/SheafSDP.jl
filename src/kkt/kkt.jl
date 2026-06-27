@@ -29,11 +29,11 @@ function refine_kkt!(
         #
         # compute the primal residual:
         #
-        #   sp = ξp - A Δp - Bᵀ Δy
+        #   sp = ξp - A Δp + Bᵀ Δy
         #
         copyto!(sp, ξp)
         mul!(sp, Symmetric(A, :L), Δp, -1, 1)
-        mul!(sp, B', Δy, -1, 1)
+        mul!(sp, B', Δy, 1, 1)
         #
         # compute the dual residual:
         #
@@ -50,7 +50,7 @@ function refine_kkt!(
         #
         # solve for dp and dy:
         #
-        #   [ A  Bᵀ ] [ dp ] = [ sp ]
+        #   [ A -Bᵀ ] [ dp ] = [ sp ]
         #   [ B  0  ] [ dy ]   [ sy ]
         #
         kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy)

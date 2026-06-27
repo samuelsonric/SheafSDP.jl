@@ -1,3 +1,17 @@
+function tounion(v::AbstractVector, perm::AbstractVector=eachindex(v))
+    return tounion(mapreduce(typeof, tmerge, v; init=Union{}), v, perm)
+end
+
+function tounion(::Type{T}, v::AbstractVector, perm::AbstractVector=eachindex(v)) where {T}
+    w = FVector{T}(undef, length(v))
+
+    for i in eachindex(w)
+        w[i] = v[perm[i]]
+    end
+
+    return w
+end
+
 function two(::Type{T}) where {T}
     return convert(T, 2)
 end
@@ -86,7 +100,7 @@ end
 
 function eigmin!(
         A::AbstractMatrix{T},
-        W::Vector{T},
+        W::AbstractVector{T},
         work::Vector{T},
         iwork::Vector{BlasInt}
     ) where {T <: BlasFloat}

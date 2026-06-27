@@ -178,7 +178,7 @@ function run_exp_benchmark(N, T; raug=1e6, ū=10.0)
         fill!(Q, 0)
 
         nv = N * blocks_per_agent
-        cones = Vector{Cone}(undef, nv)
+        cones = Vector{AbstractCone}(undef, nv)
         for i in 1:N
             for t in 1:T
                 cones[col_x(i, t)] = CofreeCone()
@@ -192,13 +192,13 @@ function run_exp_benchmark(N, T; raug=1e6, ū=10.0)
             end
         end
 
-        prob = IPMProblem(c, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c, g, cones)
         # Exp cone needs looser tolerances and more iterations (per §9)
         settings = IPMSettings{Float64}(kkt=UzawaSettings{Float64}(raug=raug), feas_tol=1e-5, gap_tol=1e-5, itmax=200)
         result = solve(prob, settings)
 
         # Return negated objective (to match Mosek's maximization)
-        return -dot(c, result.p), result.iterations, result.kkt_iters, result.status
+        return -dot(c, result.p), result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

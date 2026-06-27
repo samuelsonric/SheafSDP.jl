@@ -177,7 +177,7 @@ function run_benchmark(N, T; raug=1e6, ū=100.0, λ=1.0, ε_R=1.0)
 
         # Cones
         nv = N * blocks_per_agent
-        cones = Vector{Cone}(undef, nv)
+        cones = Vector{AbstractCone}(undef, nv)
         for i in 1:N
             for t in 1:T
                 cones[col_x(i, t)] = CofreeCone()
@@ -191,7 +191,7 @@ function run_benchmark(N, T; raug=1e6, ū=100.0, λ=1.0, ε_R=1.0)
             end
         end
 
-        prob = IPMProblem(c, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c, g, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-8, gap_tol=1e-8, itmax=100
@@ -200,7 +200,7 @@ function run_benchmark(N, T; raug=1e6, ū=100.0, λ=1.0, ε_R=1.0)
 
         # Objective: ½ p'Qp + c'p
         obj = 0.5 * dot(result.p, Symmetric(sparse(Q), :L) * result.p) + dot(c, result.p)
-        return obj, result.iterations, result.kkt_iters, result.status
+        return obj, result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

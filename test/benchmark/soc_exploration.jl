@@ -176,14 +176,14 @@ function build_soc_problem(N, n_v, d_e, edges; use_quadratic=false, quad_weight=
     end
 
     # Cones
-    cones = Vector{Cone}(undef, 3*N)
+    cones = Vector{AbstractCone}(undef, 3*N)
     for i in 1:N
         cones[col_ζ(i)] = SheafSDP.SecondOrderCone()
         cones[col_sp(i)] = SheafSDP.PositiveCone()
         cones[col_sm(i)] = SheafSDP.PositiveCone()
     end
 
-    return IPMProblem(c_vec, g, B_mat, Q, cones), F, b, x0
+    return IPMProblem(Q, B_mat, c_vec, g, cones), F, b, x0
 end
 
 #=============================================================================
@@ -327,7 +327,7 @@ function run_soc_benchmark(config; warmup=false, raug_values=[1e4, 1e5, 1e6, 1e7
         topology=topology, N=N, n_v=n_v, d_e=d_e, quadratic=use_quadratic,
         nvars=size(prob.B, 2), ncons=size(prob.B, 1), nedges=length(edges),
         t_sheaf=t_sheaf*1000, t_mosek=t_mosek*1000,
-        best_raug=best_raug, iters=result.iterations, status=result.status,
+        best_raug=best_raug, iters=result.ipm_niter, status=result.status,
         speedup=t_mosek/t_sheaf, obj_diff=abs(obj_sheaf - obj_mosek)
     )
 end
@@ -394,7 +394,7 @@ function build_qp_problem(N, n_v, d_e, edges; quad_weight=1.0, seed=42)
     # Cones: all CofreeCone (no cone constraint)
     cones = [SheafSDP.CofreeCone() for _ in 1:N]
 
-    return IPMProblem(c_vec, g, B_mat, Q, cones), F, b, x0
+    return IPMProblem(Q, B_mat, c_vec, g, cones), F, b, x0
 end
 
 function solve_qp_with_mosek(N, n_v, d_e, edges, F, b; quad_weight=1.0)
@@ -486,7 +486,7 @@ function run_qp_benchmark(config; warmup=false, raug_values=[1e6, 1e7, 1e8, 1e9,
         topology=topology, N=N, n_v=n_v, d_e=d_e, problem=:QP,
         nvars=size(prob.B, 2), ncons=size(prob.B, 1), nedges=length(edges),
         t_sheaf=best_time*1000, t_mosek=t_mosek*1000,
-        best_raug=best_raug, iters=best_result.iterations,
+        best_raug=best_raug, iters=best_result.ipm_niter,
         speedup=t_mosek/best_time, obj_diff=abs(obj_sheaf - obj_mosek)
     )
 end

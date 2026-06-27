@@ -223,7 +223,7 @@ function run_pnorm_benchmark(N, T, p; raug=1e6, ū=100.0)
         fill!(Q, 0)
 
         nv = N * blocks_per_agent
-        cones = Vector{SheafSDP.Cone}(undef, nv)
+        cones = Vector{SheafSDP.AbstractCone}(undef, nv)
         for i in 1:N
             for t_idx in 1:T
                 cones[col_x(i, t_idx)] = SheafSDP.CofreeCone()
@@ -238,7 +238,7 @@ function run_pnorm_benchmark(N, T, p; raug=1e6, ū=100.0)
             end
         end
 
-        prob = IPMProblem(c, g, B, Q, cones)
+        prob = IPMProblem(Q, B, c, g, cones)
         settings = IPMSettings{Float64}(
             kkt=UzawaSettings{Float64}(raug=raug),
             feas_tol=1e-6, gap_tol=1e-6, itmax=200,
@@ -246,7 +246,7 @@ function run_pnorm_benchmark(N, T, p; raug=1e6, ū=100.0)
         )
         result = solve(prob, settings)
 
-        return dot(c, result.p), result.iterations, result.kkt_iters, result.status
+        return dot(c, result.p), result.ipm_niter, result.kkt_niter, result.status
     end
 
     # Warmup

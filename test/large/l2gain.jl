@@ -167,14 +167,14 @@ function build_l2gain_problem(N, n_i, m_i, p_i, d_e, edges)
     Q = SheafSDP.allocblockdiag(B)
     fill!(Q, zero(T))
 
-    cones = Vector{Cone}(undef, 2N + 1)
+    cones = Vector{AbstractCone}(undef, 2N + 1)
     for ii in 1:N
         cones[col_P(ii)] = SemidefiniteCone()
         cones[col_S(ii)] = SemidefiniteCone()
     end
     cones[col_μ] = PositiveCone()
 
-    return IPMProblem(c_vec, g_vec, B, Q, cones), systems, interface_maps
+    return IPMProblem(Q, B, c_vec, g_vec, cones), systems, interface_maps
 end
 
 # Solve with Mosek for comparison (SISO only)
@@ -257,7 +257,7 @@ function run_test(N, n_i, d_e; warmup=false, raug=1e6)
         N=N, n_i=n_i, d_e=d_e, stalk=stalk_size,
         nvars=size(prob.B, 2), ncons=size(prob.B, 1),
         t_sheaf=t_sheaf*1000, t_mosek=t_mosek*1000,
-        iters=result.iterations, status=result.status,
+        iters=result.ipm_niter, status=result.status,
         γ_sheaf=γ_sheaf, γ_mosek=γ_mosek,
         γ_diff=abs(γ_sheaf - γ_mosek)
     )
@@ -301,7 +301,7 @@ function run_with_raug(N, n_i, d_e, raug)
     )
 
     t = @elapsed result = solve(prob, settings)
-    return (raug=raug, time=t*1000, iters=result.iterations, status=result.status)
+    return (raug=raug, time=t*1000, iters=result.ipm_niter, status=result.status)
 end
 
 @printf("\n%12s | %10s | %5s | %8s\n", "raug", "time", "iters", "status")

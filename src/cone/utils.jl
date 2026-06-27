@@ -2,10 +2,8 @@
 # 3×3 linear algebra helpers
 #
 
-using LinearAlgebra: LowerTriangular, Adjoint
-
 # Cross product of two 3-vectors: z = x × y
-function cross3!(z::AbstractVector{T}, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
+function cross3!(z::AbstractVector, x::AbstractVector, y::AbstractVector)
     z[1] = x[2] * y[3] - x[3] * y[2]
     z[2] = x[3] * y[1] - x[1] * y[3]
     z[3] = x[1] * y[2] - x[2] * y[1]
@@ -58,7 +56,7 @@ function mul3!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, α::Numb
 end
 
 # M ← α x yᵀ + β M (3×3 rank-1 update)
-function ger3!(M, x, y, α, β)
+function ger3!(M::AbstractMatrix, x::AbstractVector, y::AbstractVector, α::Number, β::Number)
     if iszero(β)
         M[1,1] = α * x[1] * y[1]
         M[2,1] = α * x[2] * y[1]
@@ -210,7 +208,7 @@ function ldiv3!(Lt::Adjoint{<:Any, <:LowerTriangular}, b::AbstractVector)
 end
 
 # Binary search for last t in [lo, hi] where f(t) is true
-function binarysearchlast(f, lo::T, hi::T, tol::T, itmax::Int) where {T}
+function binarysearchlast(f, lo::T, hi::T, tol::T, itmax::Integer) where {T}
     for _ in 1:itmax
         mid = (lo + hi) / 2
 
