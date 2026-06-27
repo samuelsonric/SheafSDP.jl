@@ -140,7 +140,7 @@ function IPMResult(s::IPMSolver{T}, status::IPMStatus) where {T}
 
     for row in s.hist
         ipm_niter += 1
-        kkt_niter += row.niter
+        kkt_niter += row.npred + row.ncorr
     end
 
     return IPMResult{T}(p, d, y, status, ipm_niter, kkt_niter, s.hist)
@@ -542,7 +542,6 @@ function step!(s::IPMSolver{T}) where {T}
     kkt_iters_corr = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
                              itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol)
 
-    kkt_iters = kkt_iters_aff + kkt_iters_corr
     #
     # take a step in the direction
     #
@@ -563,7 +562,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpy!(τd, w.Δd, s.d)
     axpy!(τd, w.Δy, s.y)
 
-    push!(s.hist, (μ=μ, pstep=τp, dstep=τd, pres=nrp, dres=nrd, niter=kkt_iters))
+    push!(s.hist, (μ=μ, pstep=τp, dstep=τd, pres=nrp, dres=nrd, npred=kkt_iters_aff, ncorr=kkt_iters_corr))
 
     if s.settings.verbose
         printrow(length(s.hist), s.hist[end])

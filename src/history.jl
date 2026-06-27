@@ -1,4 +1,4 @@
-const HistoryRow{T} = @NamedTuple{μ::T, pstep::T, dstep::T, pres::T, dres::T, niter::Int}
+const HistoryRow{T} = @NamedTuple{μ::T, pstep::T, dstep::T, pres::T, dres::T, npred::Int, ncorr::Int}
 
 struct History{T} <: AbstractVector{HistoryRow{T}}
     μ::Vector{T}
@@ -6,11 +6,12 @@ struct History{T} <: AbstractVector{HistoryRow{T}}
     dstep::Vector{T}
     pres::Vector{T}
     dres::Vector{T}
-    niter::Vector{Int}
+    npred::Vector{Int}
+    ncorr::Vector{Int}
 end
 
 function History{T}() where {T}
-    return History{T}(T[], T[], T[], T[], T[], Int[])
+    return History{T}(T[], T[], T[], T[], T[], Int[], Int[])
 end
 
 function Base.size(h::History)
@@ -19,7 +20,7 @@ function Base.size(h::History)
 end
 
 function Base.getindex(h::History, i::Int)
-    return (μ=h.μ[i], pstep=h.pstep[i], dstep=h.dstep[i], pres=h.pres[i], dres=h.dres[i], niter=h.niter[i])
+    return (μ=h.μ[i], pstep=h.pstep[i], dstep=h.dstep[i], pres=h.pres[i], dres=h.dres[i], npred=h.npred[i], ncorr=h.ncorr[i])
 end
 
 function Base.push!(h::History, row::NamedTuple)
@@ -28,10 +29,11 @@ function Base.push!(h::History, row::NamedTuple)
     push!(h.dstep, row.dstep)
     push!(h.pres,  row.pres)
     push!(h.dres,  row.dres)
-    push!(h.niter, row.niter)
+    push!(h.npred, row.npred)
+    push!(h.ncorr, row.ncorr)
     return h
 end
 
 function printrow(i::Integer, row::HistoryRow)
-    println("Iter $i: μ = $(row.μ), ||rp|| = $(row.pres), ||rd|| = $(row.dres), kkt = $(row.niter)")
+    println("Iter $i: μ = $(row.μ), ||rp|| = $(row.pres), ||rd|| = $(row.dres), kkt = $(row.npred)+$(row.ncorr)")
 end
