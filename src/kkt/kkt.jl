@@ -5,21 +5,11 @@ include("it.jl")
 include("uzawa.jl")
 
 #
-# residual_stop: stop refinement when
+# iterative refinement: stop when
 #
 #   (1) residual ≤ η ‖ξ‖  (target achieved), or
 #   (2) res / res_prev > stall  (contraction stall: κ·u floor reached)
 #
-function residual_stop(η::T, ξnorm::T, stall::T) where {T}
-    prev = Ref(typemax(T))
-    return function (pass::Int, res::T, sy)
-        hit = res ≤ η * ξnorm
-        stalled = pass > 1 && res > stall * prev[]
-        prev[] = res
-        return hit || stalled
-    end
-end
-
 function refine_kkt!(
         Δp::AbstractVector{T},
         Δy::AbstractVector{T},
@@ -32,14 +22,16 @@ function refine_kkt!(
         sp::AbstractVector{T},
         sy::AbstractVector{T},
         dp::AbstractVector{T},
-        dy::AbstractVector{T},
-        should_stop;
-        itmax::Int = 10,
-        rtolmin::T = zero(T),
+        dy::AbstractVector{T};
+        itmax::Int,
+        force::T,
+        stall::T,
     ) where {T}
+    tol = force * max(norm(ξp, Inf), norm(ξy, Inf))
+    prv = typemax(T)
     kkt_iters = 0
 
-    for pass in 1:itmax
+    for _ in 1:itmax
         #
         # compute full KKT residual:
         #
@@ -55,14 +47,18 @@ function refine_kkt!(
 
         res = max(norm(sp, Inf), norm(sy, Inf))
 
-        should_stop(pass, res, sy) && break
+        if res ≤ tol || res > stall * prv
+            break
+        end
+
+        prv = res
         #
         # solve for dp and dy:
         #
         #   [ A -Bᵀ ] [ dp ] = [ sp ]
         #   [ B  0  ] [ dy ]   [ sy ]
         #
-        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy; rtolmin)
+        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy; rtolmin = force)
         #
         # update the directions:
         #

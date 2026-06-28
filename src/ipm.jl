@@ -227,17 +227,15 @@ function newton!(
         dy::AbstractVector{T},
         y0 = nothing;
         itmax::Integer = 0,
-        η::T = T(0.3),
+        force::T = T(0.3),
         stall::T = T(0.5),
     ) where {T}
-    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtolmin = η)
+    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtolmin = force)
 
     if itmax > 0
-        ξnorm = max(norm(f, Inf), norm(rp, Inf))
-        should_stop = residual_stop(η, ξnorm, stall)
         kkt_iters += refine_kkt!(
-            Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy, should_stop;
-            itmax, rtolmin = η,
+            Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy;
+            itmax, force, stall,
         )
     end
 
@@ -451,25 +449,25 @@ function step!(s::IPMSolver{T}) where {T}
         μ = dot(s.p, s.d) / s.ν
     end
     #
-    # principled forcing term:
+    # compute the forcing term
     #
-    #   η = min(η_max, C · μ / μ₀)
+    #   η = min(η₀, C μ / μ₀),
     #
-    # the inner CG tolerance is max(√eps, η):
-    # loose early (η ≈ 0.3), tight late (η → √eps).
-    # refinement targets η · ‖ξ‖ and stops at
-    # contraction stall (κ·u floor reached).
+    # which modifies the tolerance
+    # of the KKT system solver.
     #
-    μ0 = isempty(s.hist) ? μ : s.hist.μ[1]
-
-    if iszero(μ0)
-        η = s.settings.forcing_ceiling
+    if isempty(s.hist)
+        μ0 = μ
     else
-        η = min(s.settings.forcing_ceiling, s.settings.forcing_scale * μ / μ0)
+        μ0 = s.hist.μ[1]
     end
 
-    stall = s.settings.refine_stall
-    refine_itmax = s.settings.refine_itmax
+    if iszero(μ0)
+        force = s.settings.forcing_ceiling
+    else
+        force = min(s.settings.forcing_ceiling, s.settings.forcing_scale * μ / μ0)
+    end
+
     #
     # check the quantities
     #
@@ -519,7 +517,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpby!(-1, w.rd, 1, w.f)
 
     kkt_iters_aff = newton!(w.Δpa, w.Δya, w.Δda, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy;
-                            itmax=refine_itmax, η, stall)
+                            itmax=s.settings.refine_itmax, force, stall=s.settings.refine_stall)
     #
     # compute the centering parameter
     #
@@ -560,7 +558,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpy!(-1, w.rd, w.f)
 
     kkt_iters_corr = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
-                             itmax=refine_itmax, η, stall)
+                             itmax=s.settings.refine_itmax, force, stall=s.settings.refine_stall)
 
     #
     # take a step in the direction
