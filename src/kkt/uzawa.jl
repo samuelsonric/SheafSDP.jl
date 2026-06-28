@@ -98,9 +98,11 @@ function solve_kkt!(
     B::BlockSparseMatrix{T},
     f::AbstractVector{T},
     g::AbstractVector{T},
-    y0 = nothing
+    y0 = nothing;
+    rtolmin::T = zero(T),
 ) where {UPLO, T}
-    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, set.rtol, set.itmax, y0)
+    rtol_eff = max(set.rtol, rtolmin)
+    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, rtol_eff, set.itmax, y0)
 end
 
 #

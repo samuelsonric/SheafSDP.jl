@@ -19,11 +19,13 @@ function refine_kkt!(
         dy::AbstractVector{T};
         itmax::Int=10,
         atol::T=T(1e-12),
-        rtol::T=T(1e-13)
+        rtol::T=T(1e-13),
+        rtolmin::Real=0,
     ) where {T}
     kkt_iters = 0
     normξ = max(norm(ξp, Inf), norm(ξy, Inf))
-    tol = atol + rtol * normξ
+    rtol_eff = max(rtol, T(rtolmin))
+    tol = atol + rtol_eff * normξ
 
     for _ in 1:itmax
         #
@@ -53,7 +55,7 @@ function refine_kkt!(
         #   [ A -Bᵀ ] [ dp ] = [ sp ]
         #   [ B  0  ] [ dy ]   [ sy ]
         #
-        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy)
+        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy; rtolmin)
         #
         # update the directions:
         #

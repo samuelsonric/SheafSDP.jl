@@ -40,6 +40,10 @@ end
     refine_atol::T = 1e-12
     refine_rtol::T = 1e-13
     scale_itmax::Int = 10
+    # Loose-end relative tol for inner KKT solve (Zanetti-Gondzio tol_0).
+    # Scaled by s = μ/μ_0 each IPM iteration; floored at kkt.rtol.
+    # Set to 0 to recover fixed-tolerance behavior.
+    force_tol::T = 1e-3
 end
 
 struct IPMResult{T}
@@ -226,11 +230,12 @@ function newton!(
         itmax::Integer = 0,
         atol::Real = 1e-12,
         rtol::Real = 1e-13,
+        rtolmin::Real = 0,
     )
-    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0)
+    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtolmin)
 
     if itmax > 0
-        kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy; itmax, atol, rtol)
+        kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy; itmax, atol, rtol, rtolmin)
     end
 
     copyto!(Δd, rd)
@@ -443,13 +448,31 @@ function step!(s::IPMSolver{T}) where {T}
         μ = dot(s.p, s.d) / s.ν
     end
     #
-    # iterative refinement only in endgame
+    # compute the relative tolerance floor
     #
-    if μ < 100 * s.settings.gap_tol
-        refine_itmax = s.settings.refine_itmax
+    #   ϵ μ / μ₀,
+    #
+    # where μ₀ is the initial centrality
+    # parameter and ϵ is a forcing tolerance.
+    # this avoids over-solving the KKT system
+    # when μ is large. 
+    if iszero(s.settings.force_tol)
+        rtolmin = zero(T)
     else
-        refine_itmax = 0
+        if isempty(s.hist)
+            μ0 = μ
+        else
+            μ0 = s.hist.μ[1]
+        end
+
+        if iszero(μ0)
+            rtolmin = s.settings.force_tol
+        else
+            rtolmin = s.settings.force_tol * μ / μ0
+        end
     end
+
+    refine_itmax = s.settings.refine_itmax
     #
     # check the quantities
     #
@@ -499,7 +522,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpby!(-1, w.rd, 1, w.f)
 
     kkt_iters_aff = newton!(w.Δpa, w.Δya, w.Δda, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy;
-                            itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol)
+                            itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol, rtolmin=rtolmin)
     #
     # compute the centering parameter
     #
@@ -540,7 +563,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpy!(-1, w.rd, w.f)
 
     kkt_iters_corr = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
-                             itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol)
+                             itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol, rtolmin=rtolmin)
 
     #
     # take a step in the direction
