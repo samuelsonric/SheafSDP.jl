@@ -159,10 +159,12 @@ function build_problem(N, n_i)
     return SheafSDP.IPMProblem(Q, B, c_vec, g_vec, cones)
 end
 
-println("Forcing-term sweep")
+println("Principled forcing-term sweep: η_max ∈ {0, 0.1, 0.3, 0.5}")
 println("="^70)
+println("  η = min(η_max, μ/μ₀) : loose early, tight late")
+println()
 
-# Test multiple force_tol values at N=100
+# Test multiple forcing_ceiling values at N=100
 N, n_i = 100, 16
 prob = build_problem(N, n_i)
 
@@ -173,21 +175,21 @@ println()
 settings_base = SheafSDP.IPMSettings{Float64}(
     kkt=SheafSDP.UzawaSettings{Float64}(raug=1e6),
     feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-    force_tol=0.0
+    forcing_ceiling=0.0
 )
 solve(prob, settings_base)
 
-force_tols = [0.0, 1e-4, 1e-3, 1e-2, 1e-1]
+ceilings = [0.0, 0.1, 0.3, 0.5]
 
-println("force_tol | Status | IPM | CG | iter1 CG | reduction")
-println("------------|--------|-----|----|---------|-----------")
+println("η_max | Status | IPM | CG | iter1 CG | reduction")
+println("------|--------|-----|----|---------|-----------")
 
 baseline_cg = 0
-for (i, ft) in enumerate(force_tols)
+for (i, η_max) in enumerate(ceilings)
     settings = SheafSDP.IPMSettings{Float64}(
         kkt=SheafSDP.UzawaSettings{Float64}(raug=1e6),
         feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-        force_tol=ft
+        forcing_ceiling=η_max
     )
     result = solve(prob, settings)
     iter1_cg = result.history[1].npred + result.history[1].ncorr
@@ -200,6 +202,6 @@ for (i, ft) in enumerate(force_tols)
     end
 
     status_str = string(result.status)[1:min(6, length(string(result.status)))]
-    @printf(" %9.0e  | %6s | %3d | %3d |   %3d   | %s\n",
-        ft, status_str, result.ipm_niter, result.kkt_niter, iter1_cg, reduction)
+    @printf(" %4.1f | %6s | %3d | %3d |   %3d   | %s\n",
+        η_max, status_str, result.ipm_niter, result.kkt_niter, iter1_cg, reduction)
 end

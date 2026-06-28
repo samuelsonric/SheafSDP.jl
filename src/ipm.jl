@@ -36,11 +36,13 @@ end
     verbose::Bool = false
     near_factor::T = 1000.0
     step_collapse_threshold::T = 1e-6
+    # forcing term: η = min(forcing_ceiling, forcing_scale * μ/μ₀)
+    forcing_ceiling::T = 0.3
+    forcing_scale::T = 1.0
+    # refinement
     refine_itmax::Int = 10
-    refine_atol::T = 1e-12
-    refine_rtol::T = 1e-13
+    refine_stall::T = 0.5
     scale_itmax::Int = 10
-    force_tol::T = 1e-3
 end
 
 struct IPMResult{T}
@@ -208,31 +210,35 @@ function scale!(
 end
 
 function newton!(
-        Δp::AbstractVector,
-        Δy::AbstractVector,
-        Δd::AbstractVector,
-        wrk::KKTWorkspace,
-        set::KKTSettings,
-        H::BlockSparseMatrix,
-        B::BlockSparseMatrix,
-        f::AbstractVector,
-        rp::AbstractVector,
-        rd::AbstractVector,
-        Q::BlockSparseMatrix,
-        sp::AbstractVector,
-        sy::AbstractVector,
-        dp::AbstractVector,
-        dy::AbstractVector,
+        Δp::AbstractVector{T},
+        Δy::AbstractVector{T},
+        Δd::AbstractVector{T},
+        wrk::KKTWorkspace{T},
+        set::KKTSettings{T},
+        H::BlockSparseMatrix{T},
+        B::BlockSparseMatrix{T},
+        f::AbstractVector{T},
+        rp::AbstractVector{T},
+        rd::AbstractVector{T},
+        Q::BlockSparseMatrix{T},
+        sp::AbstractVector{T},
+        sy::AbstractVector{T},
+        dp::AbstractVector{T},
+        dy::AbstractVector{T},
         y0 = nothing;
         itmax::Integer = 0,
-        atol::Real = 1e-12,
-        rtol::Real = 1e-13,
-        rtolmin::Real = 0,
-    )
-    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtolmin)
+        η::T = T(0.3),
+        stall::T = T(0.5),
+    ) where {T}
+    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtolmin = η)
 
     if itmax > 0
-        kkt_iters += refine_kkt!(Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy; itmax, atol, rtol, rtolmin)
+        ξnorm = max(norm(f, Inf), norm(rp, Inf))
+        should_stop = residual_stop(η, ξnorm, stall)
+        kkt_iters += refine_kkt!(
+            Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy, should_stop;
+            itmax, rtolmin = η,
+        )
     end
 
     copyto!(Δd, rd)
@@ -445,30 +451,24 @@ function step!(s::IPMSolver{T}) where {T}
         μ = dot(s.p, s.d) / s.ν
     end
     #
-    # compute the relative tolerance floor
+    # principled forcing term:
     #
-    #   ϵ μ / μ₀,
+    #   η = min(η_max, C · μ / μ₀)
     #
-    # where μ₀ is the initial centrality
-    # parameter and ϵ is a forcing tolerance.
-    # this avoids over-solving the KKT system
-    # when μ is large. 
-    if iszero(s.settings.force_tol)
-        rtolmin = zero(T)
-    else
-        if isempty(s.hist)
-            μ0 = μ
-        else
-            μ0 = s.hist.μ[1]
-        end
+    # the inner CG tolerance is max(√eps, η):
+    # loose early (η ≈ 0.3), tight late (η → √eps).
+    # refinement targets η · ‖ξ‖ and stops at
+    # contraction stall (κ·u floor reached).
+    #
+    μ0 = isempty(s.hist) ? μ : s.hist.μ[1]
 
-        if iszero(μ0)
-            rtolmin = s.settings.force_tol
-        else
-            rtolmin = s.settings.force_tol * μ / μ0
-        end
+    if iszero(μ0)
+        η = s.settings.forcing_ceiling
+    else
+        η = min(s.settings.forcing_ceiling, s.settings.forcing_scale * μ / μ0)
     end
 
+    stall = s.settings.refine_stall
     refine_itmax = s.settings.refine_itmax
     #
     # check the quantities
@@ -519,7 +519,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpby!(-1, w.rd, 1, w.f)
 
     kkt_iters_aff = newton!(w.Δpa, w.Δya, w.Δda, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy;
-                            itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol, rtolmin=rtolmin)
+                            itmax=refine_itmax, η, stall)
     #
     # compute the centering parameter
     #
@@ -560,7 +560,7 @@ function step!(s::IPMSolver{T}) where {T}
     axpy!(-1, w.rd, w.f)
 
     kkt_iters_corr = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
-                             itmax=refine_itmax, atol=s.settings.refine_atol, rtol=s.settings.refine_rtol, rtolmin=rtolmin)
+                             itmax=refine_itmax, η, stall)
 
     #
     # take a step in the direction

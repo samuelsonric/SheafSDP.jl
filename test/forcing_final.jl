@@ -160,22 +160,26 @@ function build_problem(N, n_i)
     return SheafSDP.IPMProblem(Q, B, c_vec, g_vec, cones)
 end
 
-println("Forcing-term final comparison: default (1e-3) vs OFF (0)")
+println("Principled forcing: default (η_max=0.3) vs OFF (η_max=0)")
 println("="^70)
+println("  η = min(η_max, μ/μ₀) : loose early, tight late, floored at √eps")
+println()
 
 N, n_i = 100, 16
 prob = build_problem(N, n_i)
 
+# forcing OFF: η_max=0 means η=0, so rtol = max(√eps, 0) = √eps always
 settings_off = SheafSDP.IPMSettings{Float64}(
     kkt=SheafSDP.UzawaSettings{Float64}(raug=1e6),
     feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-    force_tol=0.0
+    forcing_ceiling=0.0
 )
 
+# forcing ON: default η_max=0.3
 settings_default = SheafSDP.IPMSettings{Float64}(
     kkt=SheafSDP.UzawaSettings{Float64}(raug=1e6),
-    feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false
-    # force_tol uses default 1e-3
+    feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
+    # uses default forcing_ceiling=0.3
 )
 
 # Warmup
@@ -200,6 +204,6 @@ end
 
 println()
 println("Summary:")
-@printf("  force_tol=0 (OFF):   %.1f ms avg\n", mean(times_off)*1000)
-@printf("  force_tol=1e-3 (ON): %.1f ms avg\n", mean(times_on)*1000)
+@printf("  forcing_ceiling=0 (OFF):   %.1f ms avg\n", mean(times_off)*1000)
+@printf("  forcing_ceiling=0.3 (ON):  %.1f ms avg\n", mean(times_on)*1000)
 @printf("  Speedup: %.1f%%\n", 100 * (1 - mean(times_on) / mean(times_off)))

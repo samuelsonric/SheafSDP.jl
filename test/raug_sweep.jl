@@ -143,21 +143,19 @@ end
 N, n_i = 100, 16
 prob = build_problem(N, n_i)
 
-println("raug sweep (N=$N, n_i=$n_i, force_tol=1e-3)")
+println("raug sweep (N=$N, n_i=$n_i, forcing_ceiling=0.3)")
 println("="^60)
 
 # Warmup
 solve(prob, SheafSDP.IPMSettings{Float64}(
     kkt=SheafSDP.UzawaSettings{Float64}(raug=1e5),
     feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-    force_tol=1e-3
 ))
 
 for raug in [1e4, 5e4, 1e5, 5e5, 1e6, 1e7]
     settings = SheafSDP.IPMSettings{Float64}(
         kkt=SheafSDP.UzawaSettings{Float64}(raug=raug),
         feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-        force_tol=1e-3
     )
     t = @elapsed result = solve(prob, settings)
     @printf("raug=%5.0e | %12s | %2d IPM | %4d CG | %.1f sec\n",
