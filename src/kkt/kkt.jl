@@ -24,10 +24,10 @@ function refine_kkt!(
         dp::AbstractVector{T},
         dy::AbstractVector{T};
         itmax::Int,
-        force::T,
+        rtol::T,
         stall::T,
     ) where {T}
-    tol = force * max(norm(ξp, Inf), norm(ξy, Inf))
+    tol = rtol * max(norm(ξp, Inf), norm(ξy, Inf))
     prv = typemax(T)
     kkt_iters = 0
 
@@ -58,7 +58,7 @@ function refine_kkt!(
         #   [ A -Bᵀ ] [ dp ] = [ sp ]
         #   [ B  0  ] [ dy ]   [ sy ]
         #
-        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy; rtolmin = force)
+        kkt_iters += solve_kkt!(wrk, set, dp, dy, A, B, sp, sy; rtol)
         #
         # update the directions:
         #

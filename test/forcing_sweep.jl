@@ -164,7 +164,7 @@ println("="^70)
 println("  η = min(η_max, μ/μ₀) : loose early, tight late")
 println()
 
-# Test multiple forcing_ceiling values at N=100
+# Test multiple forcing_ceil values at N=100
 N, n_i = 100, 16
 prob = build_problem(N, n_i)
 
@@ -175,7 +175,7 @@ println()
 settings_base = SheafSDP.IPMSettings{Float64}(
     kkt=SheafSDP.UzawaSettings{Float64}(raug=1e6),
     feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-    forcing_ceiling=0.0
+    forcing_ceil=0.0
 )
 solve(prob, settings_base)
 
@@ -189,7 +189,7 @@ for (i, η_max) in enumerate(ceilings)
     settings = SheafSDP.IPMSettings{Float64}(
         kkt=SheafSDP.UzawaSettings{Float64}(raug=1e6),
         feas_tol=1e-8, gap_tol=1e-8, itmax=100, verbose=false,
-        forcing_ceiling=η_max
+        forcing_ceil=η_max
     )
     result = solve(prob, settings)
     iter1_cg = result.history[1].npred + result.history[1].ncorr

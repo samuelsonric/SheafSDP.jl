@@ -36,9 +36,9 @@ end
     verbose::Bool = false
     near_factor::T = 1000.0
     step_collapse_threshold::T = 1e-6
-    # forcing term: η = min(forcing_ceiling, forcing_scale * μ/μ₀)
-    forcing_ceiling::T = 0.3
-    forcing_scale::T = 1.0
+    # forcing term: η = min(forcing_ceil, forcing_frac * μ/μ₀)
+    forcing_ceil::T = 0.3
+    forcing_frac::T = 1.0
     # refinement
     refine_itmax::Int = 10
     refine_stall::T = 0.5
@@ -227,15 +227,15 @@ function newton!(
         dy::AbstractVector{T},
         y0 = nothing;
         itmax::Integer = 0,
-        force::T = T(0.3),
+        rtol::T = T(0.3),
         stall::T = T(0.5),
     ) where {T}
-    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtolmin = force)
+    kkt_iters = solve_kkt!(wrk, set, Δp, Δy, H, B, f, rp, y0; rtol)
 
     if itmax > 0
         kkt_iters += refine_kkt!(
             Δp, Δy, wrk, set, H, B, f, rp, sp, sy, dp, dy;
-            itmax, force, stall,
+            itmax, rtol, stall,
         )
     end
 
@@ -246,7 +246,7 @@ function newton!(
     return kkt_iters
 end
 
-function corrector!(
+function initcorrector!(
         cone::AbstractCone,
         v::Integer,
         f::AbstractVector,
@@ -279,6 +279,49 @@ function maxsteps(
     r = colrange(B, v)
     cv = cache(caches, v, cone)
     return maxsteps(view(p, r), view(Δp, r), view(d, r), view(Δd, r), cv, conewrk)
+end
+
+function solvepredictor!(s::IPMSolver{T}; rtol::T) where {T}
+    w = s.wrk
+
+    axpby!(-1, s.d, 0, w.f)
+    axpby!(-1, w.rd, 1, w.f)
+
+    return newton!(w.Δpa, w.Δya, w.Δda, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy;
+                   itmax=s.settings.refine_itmax, rtol, stall=s.settings.refine_stall)
+end
+
+function solvecorrector!(s::IPMSolver{T}, μ::T; rtol::T) where {T}
+    w = s.wrk
+
+    τpa = one(T)
+    τda = one(T)
+
+    for v in vtxs(s.B)
+        τpv, τdv = maxsteps(s.cones[v], v, s.p, s.d, w.Δpa, w.Δda, s.caches, s.B, s.conewrk)
+        τpa = min(τpa, τpv)
+        τda = min(τda, τdv)
+    end
+
+    σμ = zero(T)
+
+    for j in cols(s.B)
+        σμ += (s.p[j] + τpa * w.Δpa[j]) * (s.d[j] + τda * w.Δda[j])
+    end
+
+    σμ /= s.ν
+    σμ = clamp(σμ * (σμ / μ)^2, zero(T), μ)
+
+    for v in vtxs(s.B)
+        initcorrector!(s.cones[v], v, w.f, s.caches, s.p, s.d, w.Δpa, w.Δda, σμ, s.B, s.conewrk)
+    end
+
+    axpy!(-1, w.rd, w.f)
+
+    kkt_iters = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
+                        itmax=s.settings.refine_itmax, rtol, stall=s.settings.refine_stall)
+
+    return kkt_iters
 end
 
 function startingpoint(B::BlockSparseMatrix{T}, g::AbstractVector{T}, c::AbstractVector{T}, cones::AbstractVector) where {T}
@@ -346,6 +389,10 @@ function isstalled(hist::History{T}; window=5, threshold=0.99) where {T}
     return true
 end
 
+function isstalled(s::IPMSolver)
+    return isstalled(s.hist)
+end
+
 function isnearoptimal(hist::History; feas_tol, gap_tol, near_factor)
     if isempty(hist)
         return false
@@ -356,6 +403,10 @@ function isnearoptimal(hist::History; feas_tol, gap_tol, near_factor)
     rd = hist.dres[end]
 
     return rp < near_factor * feas_tol && rd < near_factor * feas_tol && μ < near_factor * gap_tol
+end
+
+function isnearoptimal(s::IPMSolver)
+    return isnearoptimal(s.hist; feas_tol=s.settings.feas_tol, gap_tol=s.settings.gap_tol, near_factor=s.settings.near_factor)
 end
 
 function isnumfail(hist::History; window=3, threshold=1e-6)
@@ -375,6 +426,14 @@ function isnumfail(hist::History; window=3, threshold=1e-6)
     end
 
     return hist.pres[end] > 0.9 * hist.pres[end - window] || hist.dres[end] > 0.9 * hist.dres[end - window]
+end
+
+function isnumfail(s::IPMSolver)
+    return isnumfail(s.hist; threshold=s.settings.step_collapse_threshold)
+end
+
+function init_kkt!(s::IPMSolver)
+    return init_kkt!(s.kkt, s.settings.kkt, s.H)
 end
 
 function CommonSolve.init(prob::IPMProblem{T, I}, settings::IPMSettings{T}=IPMSettings{T}()) where {T, I}
@@ -463,9 +522,9 @@ function step!(s::IPMSolver{T}) where {T}
     end
 
     if iszero(μ0)
-        force = s.settings.forcing_ceiling
+        rtol = s.settings.forcing_ceil
     else
-        force = min(s.settings.forcing_ceiling, s.settings.forcing_scale * μ / μ0)
+        rtol = min(s.settings.forcing_ceil, s.settings.forcing_frac * μ / μ0)
     end
 
     #
@@ -477,10 +536,10 @@ function step!(s::IPMSolver{T}) where {T}
     #
     # for convergence
     #
-    nrp = norm(w.rp) / (1 + norm(s.g))
-    nrd = norm(w.rd) / (1 + norm(s.c))
+    pres = norm(w.rp) / (1 + norm(s.g))
+    dres = norm(w.rd) / (1 + norm(s.c))
 
-    if nrp < s.settings.feas_tol && nrd < s.settings.feas_tol && (iszero(s.ν) || μ < s.settings.gap_tol)
+    if pres < s.settings.feas_tol && dres < s.settings.feas_tol && (iszero(s.ν) || μ < s.settings.gap_tol)
         return OPTIMAL
     end
     #
@@ -495,130 +554,71 @@ function step!(s::IPMSolver{T}) where {T}
         scale!(s.cones[v], v, s.H, s.caches, s.p, s.d, s.B, s.Q, s.conewrk)
     end
 
-    if !init_kkt!(s.kkt, s.settings.kkt, s.H)
+    if !init_kkt!(s)
         if s.settings.verbose
-            println("Warning: KKT factorization failed")
+            @warn "Failed to initialize KKT solver."
         end
 
-        return NUMERICAL_FAILURE
+        if isnearoptimal(s)
+            return NEAR_OPTIMAL
+        else
+            return NUMERICAL_FAILURE
+        end
     end
-    #
-    # compute the affine direction (Δpa, Δya, Δda)
-    # by solving for Δpa, Δya in
-    #
-    #   [ H -Bᵀ ] [ Δpa ] = [ -d - rd ]
-    #   [ B  0  ] [ Δya ]   [ rp      ]
-    #
-    # and setting Δda to the value
-    #
-    #   Δda = rd - Bᵀ Δya + Q Δpa
-    #
-    axpby!(-1, s.d,  0, w.f)
-    axpby!(-1, w.rd, 1, w.f)
-
-    kkt_iters_aff = newton!(w.Δpa, w.Δya, w.Δda, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy;
-                            itmax=s.settings.refine_itmax, force, stall=s.settings.refine_stall)
-    #
-    # compute the centering parameter
-    #
-    #   σμ ∈ [0, μ]
-    #
-    τpa = one(T)
-    τda = one(T)
-
-    for v in vtxs(s.B)
-        τpv, τdv = maxsteps(s.cones[v], v, s.p, s.d, w.Δpa, w.Δda, s.caches, s.B, s.conewrk)
-        τpa = min(τpa, τpv)
-        τda = min(τda, τdv)
-    end
-
-    σμ = zero(T)
-
-    for j in cols(s.B)
-        σμ += (s.p[j] + τpa * w.Δpa[j]) * (s.d[j] + τda * w.Δda[j])
-    end
-
-    σμ /= s.ν
-    σμ  = clamp(σμ * (σμ / μ)^2, zero(T), μ)
-    #
-    # solve for the corrector direction (Δp, Δy, Δd)
-    # by solving for Δp, Δy in
-    #
-    #   [ H -Bᵀ ] [ Δp ] = [ -d - rd + σμ e - Δpa ∘ Δda ]
-    #   [ B  0  ] [ Δy ]   [ rp                         ]
-    #
-    # and setting Δd to the value
-    #
-    #   Δd = rd - Bᵀ Δy + Q Δp
-    #
-    for v in vtxs(s.B)
-        corrector!(s.cones[v], v, w.f, s.caches, s.p, s.d, w.Δpa, w.Δda, σμ, s.B, s.conewrk)
-    end
-
-    axpy!(-1, w.rd, w.f)
-
-    kkt_iters_corr = newton!(w.Δp, w.Δy, w.Δd, s.kkt, s.settings.kkt, s.H, s.B, w.f, w.rp, w.rd, s.Q, w.sp, w.sy, w.dp, w.dy, w.Δya;
-                             itmax=s.settings.refine_itmax, force, stall=s.settings.refine_stall)
+    npred = solvepredictor!(s; rtol)
+    ncorr = solvecorrector!(s, μ; rtol)
 
     #
     # take a step in the direction
     #
     #   (Δp, Δy, Δd)
     #
-    τp, τd = one(T), one(T)
+    pstep, dstep = one(T), one(T)
 
     for v in vtxs(s.B)
         τpv, τdv = maxsteps(s.cones[v], v, s.p, s.d, w.Δp, w.Δd, s.caches, s.B, s.conewrk)
-        τp = min(τp, τpv)
-        τd = min(τd, τdv)
+        pstep = min(pstep, τpv)
+        dstep = min(dstep, τdv)
     end
 
-    τp *= s.settings.step_frac
-    τd *= s.settings.step_frac
+    pstep *= s.settings.step_frac
+    dstep *= s.settings.step_frac
 
-    axpy!(τp, w.Δp, s.p)
-    axpy!(τd, w.Δd, s.d)
-    axpy!(τd, w.Δy, s.y)
+    axpy!(pstep, w.Δp, s.p)
+    axpy!(dstep, w.Δd, s.d)
+    axpy!(dstep, w.Δy, s.y)
 
-    push!(s.hist, (μ=μ, pstep=τp, dstep=τd, pres=nrp, dres=nrd, npred=kkt_iters_aff, ncorr=kkt_iters_corr))
+    push!(s.hist, (; μ, pstep, dstep, pres, dres, npred, ncorr))
 
     if s.settings.verbose
         printrow(length(s.hist), s.hist[end])
     end
 
-    if isstalled(s.hist)
-        if isnearoptimal(s.hist; feas_tol=s.settings.feas_tol, gap_tol=s.settings.gap_tol, near_factor=s.settings.near_factor)
-            if s.settings.verbose
-                println("μ stalling detected but solution is near-optimal; accepting")
-            end
+    if isstalled(s)
+        if s.settings.verbose
+            @warn "Stalling detected."
+        end
 
+        if isnearoptimal(s)
             return NEAR_OPTIMAL
         else
-            if s.settings.verbose
-                println("Warning: μ stalling detected (μ=$(s.hist.μ[end]), rp=$(s.hist.pres[end]), rd=$(s.hist.dres[end]))")
-            end
-
             return STALLED
         end
     end
 
-    if isnumfail(s.hist; threshold=s.settings.step_collapse_threshold)
-        if isnearoptimal(s.hist; feas_tol=s.settings.feas_tol, gap_tol=s.settings.gap_tol, near_factor=s.settings.near_factor)
-            if s.settings.verbose
-                println("Step collapse detected but solution is near-optimal; accepting")
-            end
+    if isnumfail(s)
+        if s.settings.verbose
+            @warn "Step collapse detected."
+        end
 
+        if isnearoptimal(s)
             return NEAR_OPTIMAL
         else
-            if s.settings.verbose
-                println("Warning: numerical failure detected")
-            end
-
             return NUMERICAL_FAILURE
         end
     end
 
-    if length(s.hist) >= s.settings.itmax
+    if length(s.hist) ≥ s.settings.itmax
         return ITERATION_LIMIT
     end
 

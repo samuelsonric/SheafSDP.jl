@@ -99,9 +99,9 @@ function solve_kkt!(
     f::AbstractVector{T},
     g::AbstractVector{T},
     y0 = nothing;
-    rtolmin::T = zero(T),
+    rtol::T = set.rtol,
 ) where {UPLO, T}
-    rtol = max(set.rtol, rtolmin)
+    rtol = max(set.rtol, rtol)
     return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, rtol, set.itmax, y0)
 end
 

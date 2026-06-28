@@ -143,7 +143,7 @@ end
 N, n_i = 100, 16
 prob = build_problem(N, n_i)
 
-println("raug sweep (N=$N, n_i=$n_i, forcing_ceiling=0.3)")
+println("raug sweep (N=$N, n_i=$n_i, forcing_ceil=0.3)")
 println("="^60)
 
 # Warmup
