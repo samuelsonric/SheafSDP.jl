@@ -20,12 +20,10 @@ function refine_kkt!(
         itmax::Int=10,
         atol::T=T(1e-12),
         rtol::T=T(1e-13),
-        rtolmin::Real=0,
+        rtolmin::T=zero(T),
     ) where {T}
+    tol = atol + max(rtol, rtolmin) * max(norm(ξp, Inf), norm(ξy, Inf))
     kkt_iters = 0
-    normξ = max(norm(ξp, Inf), norm(ξy, Inf))
-    rtol_eff = max(rtol, T(rtolmin))
-    tol = atol + rtol_eff * normξ
 
     for _ in 1:itmax
         #

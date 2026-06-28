@@ -101,8 +101,8 @@ function solve_kkt!(
     y0 = nothing;
     rtolmin::T = zero(T),
 ) where {UPLO, T}
-    rtol_eff = max(set.rtol, rtolmin)
-    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, rtol_eff, set.itmax, y0)
+    rtol = max(set.rtol, rtolmin)
+    return solve_uzw!(wrk.divwrk, wrk.itrwrk, x, y, wrk.r, wrk.F, B, f, g, wrk.α[], set.atol, rtol, set.itmax, y0)
 end
 
 #

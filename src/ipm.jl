@@ -40,9 +40,6 @@ end
     refine_atol::T = 1e-12
     refine_rtol::T = 1e-13
     scale_itmax::Int = 10
-    # Loose-end relative tol for inner KKT solve (Zanetti-Gondzio tol_0).
-    # Scaled by s = μ/μ_0 each IPM iteration; floored at kkt.rtol.
-    # Set to 0 to recover fixed-tolerance behavior.
     force_tol::T = 1e-3
 end
 
